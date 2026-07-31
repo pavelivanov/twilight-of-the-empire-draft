@@ -8,6 +8,7 @@ const runId = crypto.randomUUID();
 const creatorIdentity = `integration-creator-${runId}`;
 let draft: PublicDraft | undefined;
 let creatorPlayerId: string;
+let managedDraft: PublicDraft | undefined;
 const jsonHeaders = (identity: string, name: string) => ({
   "content-type": "application/json",
   "x-demo-user-id": identity,
@@ -107,8 +108,117 @@ describe.sequential("draft lifecycle", () => {
   });
 });
 
+describe.sequential("draft management", () => {
+  it("lists a creator's drafts", async () => {
+    const response = await app.request("/api/drafts", {
+      method: "POST",
+      headers: jsonHeaders(creatorIdentity, "Alice"),
+      body: JSON.stringify({
+        title: `Managed ${runId}`,
+        players: ["Alice", "Bob", "Cara", "Dan"].map((displayName) => ({ displayName })),
+        seed: `managed-${runId}`,
+        config: {
+          playerCount: 4,
+          sliceCount: 9,
+          factionCount: 12,
+          sets: ["Base Game", "Prophecy of Kings"],
+          balance: {
+            minimumLegendaryPlanets: 2,
+            minimumOptimalInfluence: 4,
+            minimumOptimalResources: 2.5,
+            minimumOptimalTotal: 9,
+            maximumOptimalTotal: 13,
+            maximumWormholesPerSlice: 1,
+            minimumPairedAlphaWormholes: 1,
+            minimumPairedBetaWormholes: 0,
+            attemptBudget: 5_000,
+          },
+        },
+      }),
+    });
+    managedDraft = await responseDraft(response);
+
+    const listResponse = await app.request("/api/drafts", {
+      headers: jsonHeaders(creatorIdentity, "Alice"),
+    });
+    const summaries = (await listResponse.json()) as Array<{ slug: string; playerCount: number }>;
+    expect(summaries).toContainEqual(
+      expect.objectContaining({ slug: managedDraft.slug, playerCount: 4 }),
+    );
+  });
+
+  it("removes a claimed player before start and reduces the position pool", async () => {
+    if (!managedDraft) throw new Error("Managed draft was not created");
+    const leavingPlayer = managedDraft.players.find((player) => !player.isClaimed)!;
+    managedDraft = await responseDraft(
+      await app.request(`/api/drafts/${managedDraft.slug}/players/${leavingPlayer.id}/claim`, {
+        method: "POST",
+        headers: jsonHeaders(`leaver-${runId}`, leavingPlayer.displayName),
+        body: JSON.stringify({ version: managedDraft.version }),
+      }),
+    );
+    managedDraft = await responseDraft(
+      await app.request(
+        `/api/drafts/${managedDraft.slug}/players/${leavingPlayer.id}?version=${managedDraft.version}`,
+        {
+          method: "DELETE",
+          headers: jsonHeaders(creatorIdentity, "Alice"),
+        },
+      ),
+    );
+
+    expect(managedDraft.players).toHaveLength(3);
+    expect(managedDraft.config.playerCount).toBe(3);
+    expect(managedDraft.options.filter((option) => option.kind === "POSITION")).toHaveLength(3);
+    expect(managedDraft.events[0]).toEqual(
+      expect.objectContaining({ type: "PLAYER_REMOVED" }),
+    );
+  });
+
+  it("starts once all three remaining seats are claimed", async () => {
+    if (!managedDraft) throw new Error("Managed draft was not created");
+    for (const player of managedDraft.players.filter((candidate) => !candidate.isClaimed)) {
+      managedDraft = await responseDraft(
+        await app.request(`/api/drafts/${managedDraft.slug}/players/${player.id}/claim`, {
+          method: "POST",
+          headers: jsonHeaders(`managed-${player.id}`, player.displayName),
+          body: JSON.stringify({ version: managedDraft.version }),
+        }),
+      );
+    }
+    managedDraft = await responseDraft(
+      await app.request(`/api/drafts/${managedDraft.slug}/start`, {
+        method: "POST",
+        headers: jsonHeaders(creatorIdentity, "Alice"),
+        body: JSON.stringify({ version: managedDraft.version }),
+      }),
+    );
+
+    expect(managedDraft.status).toBe("DRAFTING");
+    expect(managedDraft.totalTurns).toBe(9);
+  });
+
+  it("deletes a draft and removes it from the creator's list", async () => {
+    if (!managedDraft) throw new Error("Managed draft was not created");
+    const deletedSlug = managedDraft.slug;
+    const deleteResponse = await app.request(`/api/drafts/${deletedSlug}`, {
+      method: "DELETE",
+      headers: jsonHeaders(creatorIdentity, "Alice"),
+    });
+    expect(deleteResponse.ok).toBe(true);
+    managedDraft = undefined;
+
+    const listResponse = await app.request("/api/drafts", {
+      headers: jsonHeaders(creatorIdentity, "Alice"),
+    });
+    const summaries = (await listResponse.json()) as Array<{ slug: string }>;
+    expect(summaries.some((summary) => summary.slug === deletedSlug)).toBe(false);
+  });
+});
+
 afterAll(async () => {
   if (draft?.id) await prisma.draft.delete({ where: { id: draft.id } });
+  if (managedDraft?.id) await prisma.draft.delete({ where: { id: managedDraft.id } });
   await prisma.user.deleteMany({ where: { telegramId: { contains: runId } } });
   await prisma.$disconnect();
 });

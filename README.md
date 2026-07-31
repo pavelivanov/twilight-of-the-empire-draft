@@ -1,6 +1,6 @@
 # Imperium Draft
 
-Imperium Draft is a Telegram-native Milty draft service for six-player
+Imperium Draft is a Telegram-native Milty draft service for three- to six-player
 Twilight Imperium Fourth Edition games.
 
 - The Telegram Mini App creates a draft, enrolls players, generates the option
@@ -53,9 +53,9 @@ npm test
 npm run build
 ```
 
-The API test uses the local PostgreSQL instance and runs a complete lifecycle:
-create, five player claims, creator start, eighteen picks, completion, event
-history, and cleanup.
+The API tests use the local PostgreSQL instance and cover the complete six-player
+lifecycle plus creator draft listing, seat removal, a three-player start, draft
+deletion, event history, and cleanup.
 
 To reset local draft data:
 
@@ -121,7 +121,7 @@ npm run telegram:webhook
 
 1. Open the bot privately and tap **Open draft** in its menu.
 2. Create the draft and copy the Telegram invite link from the lobby.
-3. Add the bot to the six-player group and send the command shown in the lobby:
+3. Add the bot to the players group and send the command shown in the lobby:
 
 ```text
 /draft <draft-link-code>

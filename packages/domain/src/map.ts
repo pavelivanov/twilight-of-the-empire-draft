@@ -39,6 +39,13 @@ export type MapTile = {
 
 const key = ([q, r]: MapCoordinate): string => `${q},${r}`;
 
+const seatLayoutIndexes: Readonly<Record<number, readonly number[]>> = {
+  3: [0, 2, 4],
+  4: [0, 1, 3, 4],
+  5: [0, 1, 2, 3, 4],
+  6: [0, 1, 2, 3, 4, 5],
+};
+
 export function assembleMap(players: readonly MapPlayer[]): MapTile[] {
   const positionOrder = new Map(["speaker", "second", "third", "fourth", "fifth", "sixth"].map((id, i) => [id, i]));
   const bySeat = [...players].sort(
@@ -49,8 +56,9 @@ export function assembleMap(players: readonly MapPlayer[]): MapTile[] {
   const tiles = new Map<string, MapTile>([
     [key([0, 0]), { coordinate: [0, 0], tileId: 18, kind: "center" }],
   ]);
+  const layoutIndexes = seatLayoutIndexes[bySeat.length] ?? seatLayoutIndexes[6]!;
   bySeat.forEach((player, seatIndex) => {
-    const layout = mapSeatLayouts[seatIndex];
+    const layout = mapSeatLayouts[layoutIndexes[seatIndex] ?? seatIndex];
     if (!layout) return;
     tiles.set(key(layout.home), {
       coordinate: layout.home,

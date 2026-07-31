@@ -50,16 +50,16 @@ The prototype is therefore replaced, not migrated.
 
 ## Supported v1 ruleset
 
-- Six players.
+- Three to six players.
 - Base Game + Prophecy of Kings catalog.
 - Nine generated slices and a configurable faction pool.
-- Six standard positions including Speaker.
-- Standard six-player three-ring map assembly.
+- One position per player, including Speaker.
+- Smaller tables are spaced around the six-seat map preview frame; unoccupied wedges remain empty.
 - Creator may regenerate while the draft is in setup; pools are immutable after
   start.
 
-Additional player counts and fan expansions require separate map templates and
-catalog validation and are deliberately outside v1.
+Fan expansions and tournament-specific map templates require separate catalog
+validation and are deliberately outside v1.
 
 ## Draft lifecycle
 
@@ -71,10 +71,11 @@ SETUP ── start ──> DRAFTING ── final pick ──> COMPLETE ──> A
   └── regenerate
 ```
 
-In v1, player and rules edits happen in the creation form. Once the draft row is
-created, setup supports identity claims and pool regeneration. Audited pick
-reversal and archival are schema-ready follow-up operations, not exposed UI
-actions in this build.
+Player and rules choices begin in the creation form. Once the draft row is
+created, setup supports identity claims, creator-only player removal down to
+three seats, and pool regeneration. Draft deletion is exposed from the creator's
+draft list. Audited pick reversal and archival remain schema-ready follow-up
+operations.
 
 Starting a draft is a freeze boundary. It persists:
 

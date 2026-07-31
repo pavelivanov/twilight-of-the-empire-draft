@@ -97,7 +97,7 @@ telegramRouter.post("/webhook", async (context) => {
     await sendMessage(
       String(message.chat.id),
       draft
-        ? `${draft.title}: ${draft.status.toLowerCase()}, ${draft.turnCursor}/18 choices.\n${miniAppLink(draft.slug)}`
+        ? `${draft.title}: ${draft.status.toLowerCase()}, ${draft.turnCursor}/${draft.players.length * 3} choices.\n${miniAppLink(draft.slug)}`
         : "This group is not connected to an active draft. Use /draft <draft-link-code>.",
     );
   }

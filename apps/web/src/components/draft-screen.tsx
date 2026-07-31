@@ -50,9 +50,11 @@ function OptionButton({
 export function DraftScreen({
   draft,
   onDraft,
+  onShowDrafts,
 }: {
   draft: PublicDraft;
   onDraft: (draft: PublicDraft) => void;
+  onShowDrafts: () => void;
 }) {
   const [view, setView] = useState<View>("draft");
   const [kind, setKind] = useState<"FACTION" | "SLICE" | "POSITION">("FACTION");
@@ -105,12 +107,17 @@ export function DraftScreen({
     <main className={cn("draft-shell", view === "map" && "map-is-open")}>
       <header className="app-header">
         <Brand compact />
-        <div className="draft-header-meta">
-          <span>{draft.title}</span>
-          <Badge variant={isComplete ? "default" : "outline"}>
-            <Radio aria-hidden="true" />
-            {isComplete ? "Complete" : "Live"}
-          </Badge>
+        <div className="app-header-actions">
+          <Button variant="ghost" size="sm" onClick={onShowDrafts}>
+            My drafts
+          </Button>
+          <div className="draft-header-meta">
+            <span>{draft.title}</span>
+            <Badge variant={isComplete ? "default" : "outline"}>
+              <Radio aria-hidden="true" />
+              {isComplete ? "Complete" : "Live"}
+            </Badge>
+          </div>
         </div>
       </header>
 
@@ -118,7 +125,11 @@ export function DraftScreen({
         <div className="draft-content">
           <section className="turn-hero">
             <div>
-              <span className="eyebrow">{isComplete ? "Draft complete" : `Choice ${Math.min(draft.turnCursor + 1, 18)} of 18`}</span>
+              <span className="eyebrow">
+                {isComplete
+                  ? "Draft complete"
+                  : `Choice ${Math.min(draft.turnCursor + 1, draft.totalTurns)} of ${draft.totalTurns}`}
+              </span>
               <h1>
                 {isComplete ? (
                   <>The galaxy is <em>ready.</em></>
@@ -137,9 +148,11 @@ export function DraftScreen({
               </p>
             </div>
             <div className="turn-progress">
-              <strong>{Math.min(draft.turnCursor, 18)}</strong>
-              <span>/ 18 locked</span>
-              <i style={{ "--progress": `${(draft.turnCursor / 18) * 100}%` } as React.CSSProperties} />
+              <strong>{Math.min(draft.turnCursor, draft.totalTurns)}</strong>
+              <span>/ {draft.totalTurns} locked</span>
+              <i
+                style={{ "--progress": `${(draft.turnCursor / draft.totalTurns) * 100}%` } as React.CSSProperties}
+              />
             </div>
           </section>
 

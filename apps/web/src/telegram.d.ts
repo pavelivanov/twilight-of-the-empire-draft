@@ -12,11 +12,14 @@ declare global {
         platform?: string;
         ready(): void;
         expand(): void;
+        isVersionAtLeast?(version: string): boolean;
+        requestFullscreen?(): void;
         close(): void;
         setHeaderColor?(color: string): void;
         setBackgroundColor?(color: string): void;
         setBottomBarColor?(color: string): void;
         enableClosingConfirmation?(): void;
+        disableVerticalSwipes?(): void;
         HapticFeedback?: {
           impactOccurred(style: "light" | "medium" | "heavy"): void;
           notificationOccurred(type: "error" | "success" | "warning"): void;

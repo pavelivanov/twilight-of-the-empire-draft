@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  assembleMap,
   blueSystemTiers,
+  createDraftSchema,
   createTurnOrder,
+  draftConfigSchema,
   generateBalancedSlices,
   generateFactionPool,
   systemCatalog,
@@ -15,6 +18,40 @@ describe("draft order", () => {
       "f", "e", "d", "c", "b", "a",
       "a", "b", "c", "d", "e", "f",
     ]);
+  });
+
+  it("scales the three-round snake to the table size", () => {
+    expect(createTurnOrder(["a", "b", "c"])).toEqual([
+      "a", "b", "c",
+      "c", "b", "a",
+      "a", "b", "c",
+    ]);
+  });
+});
+
+describe("table sizes", () => {
+  it("accepts 3–6 matching players and rejects a mismatched count", () => {
+    const config = draftConfigSchema.parse({ playerCount: 3 });
+    const input = {
+      title: "Three player draft",
+      players: ["Alice", "Bob", "Cara"].map((displayName) => ({ displayName })),
+      config,
+    };
+
+    expect(createDraftSchema.parse(input).players).toHaveLength(3);
+    expect(() => createDraftSchema.parse({ ...input, config: { ...config, playerCount: 4 } })).toThrow();
+  });
+
+  it("spaces smaller tables around the six-seat map frame", () => {
+    const homes = assembleMap([
+      { id: "a", positionId: "speaker" },
+      { id: "b", positionId: "second" },
+      { id: "c", positionId: "third" },
+    ])
+      .filter((tile) => tile.kind === "home")
+      .map((tile) => tile.coordinate);
+
+    expect(homes).toEqual([[0, -3], [3, 0], [-3, 3]]);
   });
 });
 
@@ -41,7 +78,7 @@ describe("balanced generation", () => {
 
   it("selects a seeded faction pool without duplicates", () => {
     const config = {
-      playerCount: 6 as const,
+      playerCount: 6,
       sliceCount: 9 as const,
       factionCount: 12,
       sets: ["Base Game", "Prophecy of Kings"] as Array<"Base Game" | "Prophecy of Kings">,

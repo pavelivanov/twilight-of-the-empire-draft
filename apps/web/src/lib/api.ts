@@ -1,4 +1,4 @@
-import type { DraftConfig, PublicDraft } from "@imperium/domain";
+import type { DraftConfig, PublicDraft, PublicDraftSummary } from "@imperium/domain";
 
 const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:3001";
 
@@ -66,11 +66,18 @@ export type CreateDraftInput = {
 export const api = {
   createDraft: (input: CreateDraftInput) =>
     request<PublicDraft>("/api/drafts", { method: "POST", body: JSON.stringify(input) }),
+  listDrafts: () => request<PublicDraftSummary[]>("/api/drafts"),
   getDraft: (draftId: string) => request<PublicDraft>(`/api/drafts/${draftId}`),
+  deleteDraft: (draftId: string) =>
+    request<{ id: string; slug: string }>(`/api/drafts/${draftId}`, { method: "DELETE" }),
   claimPlayer: (draftId: string, playerId: string, version: number) =>
     request<PublicDraft>(`/api/drafts/${draftId}/players/${playerId}/claim`, {
       method: "POST",
       body: JSON.stringify({ version }),
+    }),
+  removePlayer: (draftId: string, playerId: string, version: number) =>
+    request<PublicDraft>(`/api/drafts/${draftId}/players/${playerId}?version=${version}`, {
+      method: "DELETE",
     }),
   startDraft: (draftId: string, version: number) =>
     request<PublicDraft>(`/api/drafts/${draftId}/start`, {

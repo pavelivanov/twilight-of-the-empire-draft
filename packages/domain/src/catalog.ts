@@ -105,10 +105,10 @@ export const factionCatalog: readonly Faction[] = [
 export const positionCatalog: readonly Position[] = [
   { id: "speaker", label: "Speaker", shortLabel: "S", description: "First strategy card pick" },
   { id: "second", label: "2nd position", shortLabel: "2", description: "Clockwise from speaker" },
-  { id: "third", label: "3rd position", shortLabel: "3", description: "Two seats from speaker" },
-  { id: "fourth", label: "4th position", shortLabel: "4", description: "Across the table" },
-  { id: "fifth", label: "5th position", shortLabel: "5", description: "Two seats before speaker" },
-  { id: "sixth", label: "6th position", shortLabel: "6", description: "Immediately before speaker" },
+  { id: "third", label: "3rd position", shortLabel: "3", description: "Third clockwise from speaker" },
+  { id: "fourth", label: "4th position", shortLabel: "4", description: "Fourth clockwise from speaker" },
+  { id: "fifth", label: "5th position", shortLabel: "5", description: "Fifth clockwise from speaker" },
+  { id: "sixth", label: "6th position", shortLabel: "6", description: "Sixth clockwise from speaker" },
 ] as const;
 
 export const playerColors = ["#71d9ff", "#ffb45e", "#b49cff", "#69d8a7", "#ff8299", "#e5dd69"] as const;

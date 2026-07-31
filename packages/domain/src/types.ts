@@ -83,7 +83,7 @@ export const balanceConfigSchema = z
 export type BalanceConfig = z.infer<typeof balanceConfigSchema>;
 
 export const draftConfigSchema = z.object({
-  playerCount: z.literal(6).default(6),
+  playerCount: z.number().int().min(3).max(6).default(6),
   sliceCount: z.literal(9).default(9),
   factionCount: z.number().int().min(6).max(24).default(12),
   sets: z
@@ -119,7 +119,8 @@ export const createDraftSchema = z.object({
           .transform((value) => value?.replace(/^@/, "")),
       }),
     )
-    .length(6)
+    .min(3)
+    .max(6)
     .refine(
       (players) =>
         new Set(players.map((player) => player.displayName.toLocaleLowerCase())).size ===
@@ -128,6 +129,9 @@ export const createDraftSchema = z.object({
     ),
   config: draftConfigSchema,
   seed: z.string().trim().min(1).max(80).optional(),
+}).refine((input) => input.players.length === input.config.playerCount, {
+  message: "Player count must match the configured table size",
+  path: ["players"],
 });
 
 export const pickSchema = z.object({
@@ -180,4 +184,15 @@ export type PublicDraft = {
     playerId?: string | null;
     payload: Record<string, unknown>;
   }>;
+};
+
+export type PublicDraftSummary = {
+  id: string;
+  slug: string;
+  title: string;
+  status: DraftStatus;
+  playerCount: number;
+  claimedPlayerCount: number;
+  createdAt: string;
+  updatedAt: string;
 };

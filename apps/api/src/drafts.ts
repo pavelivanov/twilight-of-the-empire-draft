@@ -5,6 +5,7 @@ import {
   GENERATOR_VERSION,
   createDraftSchema,
   createTurnOrder,
+  draftConfigSchema,
   generateBalancedSlices,
   generateFactionPool,
   pickSchema,
@@ -12,6 +13,7 @@ import {
   positionCatalog,
   seededRandom,
   shuffle,
+  type PublicDraftSummary,
 } from "@imperium/domain";
 import { Hono } from "hono";
 import { z } from "zod";
@@ -42,6 +44,16 @@ async function uniqueSlug(title: string): Promise<string> {
   throw new ApiError(500, "SLUG_FAILED", "Could not create a unique draft link");
 }
 
+function buildPositionOptions(playerCount: number) {
+  return positionCatalog.slice(0, playerCount).map((position, sortOrder) => ({
+    kind: "POSITION" as const,
+    key: position.id,
+    label: position.label,
+    sortOrder,
+    payload: position,
+  }));
+}
+
 function buildOptions(seed: string, config: z.infer<typeof createDraftSchema>["config"]) {
   const slices = generateBalancedSlices(`${seed}:slices`, config.balance);
   const factions = generateFactionPool(seed, config);
@@ -60,15 +72,37 @@ function buildOptions(seed: string, config: z.infer<typeof createDraftSchema>["c
       sortOrder,
       payload: slice,
     })),
-    ...positionCatalog.map((position, sortOrder) => ({
-      kind: "POSITION" as const,
-      key: position.id,
-      label: position.label,
-      sortOrder,
-      payload: position,
-    })),
+    ...buildPositionOptions(config.playerCount),
   ];
 }
+
+draftsRouter.get("/", async (context) => {
+  const actor = context.get("actor");
+  const drafts = await prisma.draft.findMany({
+    where: { creatorUserId: actor.userId },
+    orderBy: { updatedAt: "desc" },
+    select: {
+      id: true,
+      slug: true,
+      title: true,
+      status: true,
+      createdAt: true,
+      updatedAt: true,
+      players: { select: { userId: true } },
+    },
+  });
+  const summaries: PublicDraftSummary[] = drafts.map((draft) => ({
+    id: draft.id,
+    slug: draft.slug,
+    title: draft.title,
+    status: draft.status,
+    playerCount: draft.players.length,
+    claimedPlayerCount: draft.players.filter((player) => Boolean(player.userId)).length,
+    createdAt: draft.createdAt.toISOString(),
+    updatedAt: draft.updatedAt.toISOString(),
+  }));
+  return context.json(summaries);
+});
 
 draftsRouter.post("/", zValidator("json", createDraftSchema), async (context) => {
   const actor = context.get("actor");
@@ -87,7 +121,7 @@ draftsRouter.post("/", zValidator("json", createDraftSchema), async (context) =>
           slug,
           title: input.title,
           creatorUserId: actor.userId,
-          playerCount: 6,
+          playerCount: input.config.playerCount,
           seed,
           generatorVersion: GENERATOR_VERSION,
           config: input.config,
@@ -107,7 +141,7 @@ draftsRouter.post("/", zValidator("json", createDraftSchema), async (context) =>
               actorUserId: actor.userId,
               payload: {
                 seed,
-                playerCount: 6,
+                playerCount: input.config.playerCount,
                 sliceCount: input.config.sliceCount,
                 factionCount: input.config.factionCount,
               },
@@ -126,6 +160,21 @@ draftsRouter.get("/:draftId", async (context) => {
   const draft = await presentDraft(context.req.param("draftId"), actor.userId);
   if (!draft) throw new ApiError(404, "DRAFT_NOT_FOUND", "Draft not found");
   return context.json(draft);
+});
+
+draftsRouter.delete("/:draftId", async (context) => {
+  const actor = context.get("actor");
+  const draftId = context.req.param("draftId");
+  const draft = await prisma.draft.findFirst({
+    where: { OR: [{ id: draftId }, { slug: draftId }] },
+    select: { id: true, slug: true, creatorUserId: true },
+  });
+  if (!draft) throw new ApiError(404, "DRAFT_NOT_FOUND", "Draft not found");
+  if (draft.creatorUserId !== actor.userId) {
+    throw new ApiError(403, "CREATOR_REQUIRED", "Only the creator can delete the draft");
+  }
+  await prisma.draft.delete({ where: { id: draft.id } });
+  return context.json({ id: draft.id, slug: draft.slug });
 });
 
 draftsRouter.post(
@@ -167,6 +216,67 @@ draftsRouter.post(
             playerId: player.id,
             payload: { playerName: player.displayName },
           },
+        });
+      },
+      { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+    );
+    return context.json(await presentDraft(draftId, actor.userId));
+  },
+);
+
+draftsRouter.delete(
+  "/:draftId/players/:playerId",
+  zValidator("query", z.object({ version: z.coerce.number().int().nonnegative() })),
+  async (context) => {
+    const actor = context.get("actor");
+    const input = context.req.valid("query");
+    const draftId = context.req.param("draftId");
+    const playerId = context.req.param("playerId");
+    await prisma.$transaction(
+      async (transaction) => {
+        const draft = await transaction.draft.findFirst({
+          where: { OR: [{ id: draftId }, { slug: draftId }] },
+          include: { players: { orderBy: { orderIndex: "asc" } } },
+        });
+        if (!draft) throw new ApiError(404, "DRAFT_NOT_FOUND", "Draft not found");
+        if (draft.creatorUserId !== actor.userId) {
+          throw new ApiError(403, "CREATOR_REQUIRED", "Only the creator can remove players");
+        }
+        if (draft.status !== "SETUP") {
+          throw new ApiError(409, "DRAFT_STARTED", "Players cannot be removed after the draft starts");
+        }
+        if (draft.version !== input.version) {
+          throw new ApiError(409, "STALE_DRAFT", "The draft changed; refresh and try again");
+        }
+        if (draft.players.length <= 3) {
+          throw new ApiError(409, "MINIMUM_PLAYERS", "A draft needs at least three players");
+        }
+        const player = draft.players.find((candidate) => candidate.id === playerId);
+        if (!player) throw new ApiError(404, "PLAYER_NOT_FOUND", "Player seat not found");
+
+        const playerCount = draft.players.length - 1;
+        const config = { ...draftConfigSchema.parse(draft.config), playerCount };
+        await transaction.draftEvent.create({
+          data: {
+            draftId: draft.id,
+            type: "PLAYER_REMOVED",
+            actorUserId: actor.userId,
+            playerId: player.id,
+            payload: { playerName: player.displayName, wasClaimed: Boolean(player.userId) },
+          },
+        });
+        await transaction.draftPlayer.delete({ where: { id: player.id } });
+        await transaction.draftPlayer.updateMany({
+          where: { draftId: draft.id, orderIndex: { gt: player.orderIndex } },
+          data: { orderIndex: { decrement: 1 } },
+        });
+        await transaction.draftOption.deleteMany({ where: { draftId: draft.id, kind: "POSITION" } });
+        await transaction.draftOption.createMany({
+          data: buildPositionOptions(playerCount).map((option) => ({ ...option, draftId: draft.id })),
+        });
+        await transaction.draft.update({
+          where: { id: draft.id },
+          data: { playerCount, config, version: { increment: 1 } },
         });
       },
       { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },

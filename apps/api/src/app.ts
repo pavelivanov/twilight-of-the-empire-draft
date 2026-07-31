@@ -27,7 +27,7 @@ app.use(
         ? origin
         : env.WEB_ORIGIN,
     allowHeaders: ["authorization", "content-type", "x-demo-user-id", "x-demo-user-name", "x-request-id"],
-    allowMethods: ["GET", "POST", "OPTIONS"],
+    allowMethods: ["GET", "POST", "DELETE", "OPTIONS"],
   }),
 );
 

@@ -1,10 +1,22 @@
 import { useState } from "react";
-import { Bot, Check, Copy, Dices, Rocket, UserRoundCheck } from "lucide-react";
+import { Bot, Check, Copy, Dices, Rocket, Trash2, UserRoundCheck } from "lucide-react";
 import { toast } from "sonner";
 import type { PublicDraft } from "@imperium/domain";
 
 import { Brand } from "@/components/brand";
 import { SliceCard } from "@/components/slice-board";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogMedia,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
@@ -24,13 +36,16 @@ function draftLink(draft: PublicDraft): string {
 export function LobbyScreen({
   draft,
   onDraft,
+  onShowDrafts,
 }: {
   draft: PublicDraft;
   onDraft: (draft: PublicDraft) => void;
+  onShowDrafts: () => void;
 }) {
   const [busy, setBusy] = useState(false);
   const slices = draft.options.filter((option) => option.kind === "SLICE");
   const claimed = draft.players.filter((player) => player.isClaimed).length;
+  const playerCount = draft.players.length;
   const currentIdentity = getDemoIdentity();
   const isTelegram = Boolean(window.Telegram?.WebApp.initData);
 
@@ -81,11 +96,29 @@ export function LobbyScreen({
     }
   }
 
+  async function removePlayer(playerId: string, displayName: string) {
+    setBusy(true);
+    try {
+      const updated = await api.removePlayer(draft.slug, playerId, draft.version);
+      onDraft(updated);
+      toast.success(`${displayName} removed from the table`);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not remove player");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <main className="lobby-shell">
       <header className="app-header">
         <Brand compact />
-        <Badge variant="outline">Setup</Badge>
+        <div className="app-header-actions">
+          <Button variant="ghost" size="sm" onClick={onShowDrafts}>
+            My drafts
+          </Button>
+          <Badge variant="outline">Setup</Badge>
+        </div>
       </header>
       <section className="lobby-hero">
         <div>
@@ -104,7 +137,7 @@ export function LobbyScreen({
                 <Dices data-icon="inline-start" aria-hidden="true" />
                 Regenerate
               </Button>
-              <Button size="lg" disabled={busy || claimed !== 6} onClick={() => mutate("start")}>
+              <Button size="lg" disabled={busy || claimed !== playerCount} onClick={() => mutate("start")}>
                 <Rocket data-icon="inline-start" aria-hidden="true" />
                 Start draft
               </Button>
@@ -117,7 +150,7 @@ export function LobbyScreen({
         <div className="section-heading">
           <div>
             <span className="eyebrow">Identity check</span>
-            <h2>{claimed} / 6 players claimed</h2>
+            <h2>{claimed} / {playerCount} players claimed</h2>
           </div>
           {!isTelegram && currentIdentity.id !== "creator" && (
             <Button variant="outline" onClick={returnToCreator}>
@@ -135,28 +168,68 @@ export function LobbyScreen({
                 <small>Draft order {index + 1}</small>
                 <strong>{player.displayName}</strong>
               </div>
-              {player.isClaimed ? (
-                <Badge variant="secondary">
-                  <Check aria-hidden="true" /> Claimed
-                </Badge>
-              ) : (
-                <Button
-                  size="sm"
-                  variant="outline"
-                  disabled={busy}
-                  onClick={() => claim(player.id, player.displayName)}
-                >
-                  <UserRoundCheck data-icon="inline-start" aria-hidden="true" />
-                  {isTelegram ? "Claim my seat" : "Preview & claim"}
-                </Button>
-              )}
+              <span className="player-seat-actions">
+                {player.isClaimed ? (
+                  <Badge variant="secondary">
+                    <Check aria-hidden="true" /> Claimed
+                  </Badge>
+                ) : (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={busy}
+                    onClick={() => claim(player.id, player.displayName)}
+                  >
+                    <UserRoundCheck data-icon="inline-start" aria-hidden="true" />
+                    {isTelegram ? "Claim my seat" : "Preview & claim"}
+                  </Button>
+                )}
+                {draft.canManage && playerCount > 3 ? (
+                  <AlertDialog>
+                    <AlertDialogTrigger
+                      render={
+                        <Button
+                          variant="ghost"
+                          size="icon-sm"
+                          disabled={busy}
+                          aria-label={`Remove ${player.displayName}`}
+                        />
+                      }
+                    >
+                      <Trash2 aria-hidden="true" />
+                    </AlertDialogTrigger>
+                    <AlertDialogContent>
+                      <AlertDialogHeader>
+                        <AlertDialogMedia>
+                          <Trash2 aria-hidden="true" />
+                        </AlertDialogMedia>
+                        <AlertDialogTitle>Remove {player.displayName}?</AlertDialogTitle>
+                        <AlertDialogDescription>
+                          {player.isClaimed
+                            ? "Their claimed seat and access to this draft will be removed. The draft order will close around the remaining players."
+                            : "Their open seat will be removed and the draft order will close around the remaining players."}
+                        </AlertDialogDescription>
+                      </AlertDialogHeader>
+                      <AlertDialogFooter>
+                        <AlertDialogCancel>Keep player</AlertDialogCancel>
+                        <AlertDialogAction
+                          variant="destructive"
+                          onClick={() => removePlayer(player.id, player.displayName)}
+                        >
+                          Remove player
+                        </AlertDialogAction>
+                      </AlertDialogFooter>
+                    </AlertDialogContent>
+                  </AlertDialog>
+                ) : null}
+              </span>
             </article>
           ))}
         </div>
-        {claimed !== 6 && draft.canManage && (
+        {claimed !== playerCount && draft.canManage && (
           <p className="lobby-note">
-            All six players must claim their named seat before the draft starts. In Telegram, each player opens
-            the shared Mini App link and taps their own name.
+            Every remaining player must claim their named seat before the draft starts. In Telegram, each player
+            opens the shared Mini App link and taps their own name. You can remove seats until three players remain.
           </p>
         )}
       </section>
