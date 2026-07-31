@@ -183,7 +183,7 @@ config_patch="$(API_SERVICE_ID="$api_service_id" WEB_SERVICE_ID="$web_service_id
         build: {
           builder: "DOCKERFILE",
           dockerfilePath: "apps/api/Dockerfile",
-          watchPatterns: ["apps/api/**", "packages/domain/**", "package.json", "package-lock.json", "tsconfig.base.json"],
+          watchPatterns: [],
         },
         deploy: {
           preDeployCommand: "npx prisma migrate deploy --schema apps/api/prisma/schema.prisma",
@@ -197,7 +197,7 @@ config_patch="$(API_SERVICE_ID="$api_service_id" WEB_SERVICE_ID="$web_service_id
         build: {
           builder: "DOCKERFILE",
           dockerfilePath: "apps/web/Dockerfile",
-          watchPatterns: ["apps/web/**", "packages/domain/**", "package.json", "package-lock.json", "tsconfig.base.json"],
+          watchPatterns: [],
         },
         deploy: {
           healthcheckPath: "/",

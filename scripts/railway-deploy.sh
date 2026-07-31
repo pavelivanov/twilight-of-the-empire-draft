@@ -42,7 +42,7 @@ is_positive_integer() {
 
 is_failure_status() {
   case "$1" in
-    FAILED | CRASHED | REMOVED | CANCELED | CANCELLED | ABORTED) return 0 ;;
+    FAILED | CRASHED | REMOVED | CANCELED | CANCELLED | ABORTED | SKIPPED) return 0 ;;
     *) return 1 ;;
   esac
 }
