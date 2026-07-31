@@ -1,0 +1,13 @@
+.git
+.env
+.env.*
+.idea
+.playwright-cli
+apps/api/.env
+apps/api/dist
+apps/web/dist
+coverage
+node_modules
+output
+playwright-report
+test-results

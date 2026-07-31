@@ -1,0 +1,52 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: imperium
+      POSTGRES_USER: imperium
+      POSTGRES_PASSWORD: imperium
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U imperium -d imperium"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - imperium_postgres:/var/lib/postgresql/data
+
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    environment:
+      NODE_ENV: development
+      PORT: 3001
+      WEB_ORIGIN: http://localhost:8080
+      DATABASE_URL: postgresql://imperium:imperium@postgres:5432/imperium?schema=public
+      APP_URL: http://localhost:8080
+      AUTH_MAX_AGE: 86400
+      ALLOW_DEMO_AUTH: "true"
+    command:
+      - /bin/sh
+      - -c
+      - npx prisma migrate deploy --schema apps/api/prisma/schema.prisma && node apps/api/dist/index.js
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "3001:3001"
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      args:
+        VITE_API_URL: http://localhost:3001
+    depends_on:
+      - api
+    ports:
+      - "8080:80"
+
+volumes:
+  imperium_postgres:

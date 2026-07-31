@@ -1,0 +1,16 @@
+.DS_Store
+.idea/
+.railway/
+.env
+.env.local
+.env.railway
+.env.production
+apps/*/.env.production
+dist/
+coverage/
+node_modules/
+npm-debug.log*
+.playwright-cli/
+apps/api/src/generated/
+apps/api/prisma/*.db
+output/

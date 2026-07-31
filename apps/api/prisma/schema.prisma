@@ -1,0 +1,154 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum DraftStatus {
+  SETUP
+  DRAFTING
+  COMPLETE
+  ARCHIVED
+}
+
+enum OptionKind {
+  FACTION
+  SLICE
+  POSITION
+}
+
+enum EventType {
+  DRAFT_CREATED
+  POOL_REGENERATED
+  DRAFT_STARTED
+  PLAYER_CLAIMED
+  OPTION_SELECTED
+  CHAT_BOUND
+  PICK_REVERTED
+  DRAFT_COMPLETED
+}
+
+enum NotificationStatus {
+  PENDING
+  SENDING
+  SENT
+  FAILED
+}
+
+model User {
+  id          String        @id @default(cuid())
+  telegramId  String        @unique
+  username    String?
+  displayName String
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+  drafts      Draft[]       @relation("DraftCreator")
+  seats       DraftPlayer[]
+  events      DraftEvent[]  @relation("EventActor")
+}
+
+model Draft {
+  id               String               @id @default(cuid())
+  slug             String               @unique
+  title            String
+  status           DraftStatus          @default(SETUP)
+  creatorUserId    String
+  telegramChatId   String?
+  playerCount      Int                  @default(6)
+  turnCursor       Int                  @default(0)
+  version          Int                  @default(0)
+  seed             String
+  generatorVersion String
+  config           Json
+  createdAt        DateTime             @default(now())
+  updatedAt        DateTime             @updatedAt
+  startedAt        DateTime?
+  completedAt      DateTime?
+  creator          User                 @relation("DraftCreator", fields: [creatorUserId], references: [id])
+  players          DraftPlayer[]
+  options          DraftOption[]
+  events           DraftEvent[]
+  outbox           NotificationOutbox[]
+
+  @@index([creatorUserId])
+  @@index([telegramChatId])
+}
+
+model DraftPlayer {
+  id                String        @id @default(cuid())
+  draftId           String
+  userId            String?
+  displayName       String
+  telegramUsername  String?
+  orderIndex        Int
+  color             String
+  createdAt         DateTime      @default(now())
+  draft             Draft         @relation(fields: [draftId], references: [id], onDelete: Cascade)
+  user              User?         @relation(fields: [userId], references: [id])
+  selectedOptions   DraftOption[] @relation("SelectedBy")
+  events            DraftEvent[]
+
+  @@unique([draftId, orderIndex])
+  @@unique([draftId, userId])
+  @@index([draftId])
+}
+
+model DraftOption {
+  id                 String       @id @default(cuid())
+  draftId            String
+  kind               OptionKind
+  key                String
+  label              String
+  sortOrder          Int
+  payload            Json
+  selectedByPlayerId String?
+  selectedAt         DateTime?
+  draft              Draft        @relation(fields: [draftId], references: [id], onDelete: Cascade)
+  selectedBy         DraftPlayer? @relation("SelectedBy", fields: [selectedByPlayerId], references: [id])
+
+  @@unique([draftId, kind, key])
+  @@index([draftId, kind, selectedByPlayerId])
+}
+
+model DraftEvent {
+  id                 String                @id @default(cuid())
+  draftId            String
+  type               EventType
+  actorUserId        String?
+  playerId           String?
+  idempotencyKey     String?               @unique
+  payload            Json
+  createdAt          DateTime              @default(now())
+  draft              Draft                 @relation(fields: [draftId], references: [id], onDelete: Cascade)
+  actor              User?                 @relation("EventActor", fields: [actorUserId], references: [id])
+  player             DraftPlayer?          @relation(fields: [playerId], references: [id])
+  notificationOutbox NotificationOutbox[]
+
+  @@index([draftId, createdAt])
+}
+
+model NotificationOutbox {
+  id            String             @id @default(cuid())
+  draftId       String
+  eventId       String
+  chatId        String
+  message       String
+  status        NotificationStatus @default(PENDING)
+  attempts      Int                @default(0)
+  nextAttemptAt DateTime           @default(now())
+  lastError     String?
+  createdAt     DateTime           @default(now())
+  sentAt        DateTime?
+  draft         Draft              @relation(fields: [draftId], references: [id], onDelete: Cascade)
+  event         DraftEvent         @relation(fields: [eventId], references: [id], onDelete: Cascade)
+
+  @@index([status, nextAttemptAt])
+}
+
+model TelegramUpdate {
+  updateId   String   @id
+  receivedAt DateTime @default(now())
+}

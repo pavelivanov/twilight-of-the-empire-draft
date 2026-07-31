@@ -1,0 +1,35 @@
+{
+  "name": "imperium-draft",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build -w @imperium/domain && npm run build -w @imperium/api && npm run build -w @imperium/web",
+    "predev": "npm run build -w @imperium/domain && npm run db:generate",
+    "dev": "concurrently -k -n api,web -c magenta,cyan \"npm run dev -w @imperium/api\" \"npm run dev -w @imperium/web\"",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "pretest": "npm run build -w @imperium/domain",
+    "test": "npm run test --workspaces --if-present",
+    "db:generate": "npm run db:generate -w @imperium/api",
+    "db:migrate": "npm run db:migrate -w @imperium/api",
+    "db:seed": "npm run db:seed -w @imperium/api",
+    "db:studio": "npm run db:studio -w @imperium/api",
+    "db:up": "docker compose up -d postgres",
+    "db:down": "docker compose down",
+    "railway:setup": "bash scripts/railway-setup.sh",
+    "railway:env": "bash scripts/railway-env-push.sh",
+    "deploy:railway": "bash scripts/railway-deploy.sh",
+    "telegram:webhook": "bash scripts/railway-telegram-setup.sh"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1",
+    "typescript": "^5.9.3"
+  }
+}
