@@ -158,6 +158,7 @@ push_secret "$API_SERVICE" WEBHOOK_SECRET "$WEBHOOK_SECRET_VALUE"
 
 echo "[$WEB_SERVICE] Pushing frontend build configuration."
 railway_with_scope variable set \
+  "PORT=8080" \
   "VITE_API_URL=$api_url" \
   "VITE_TELEGRAM_BOT_USERNAME=$BOT_USERNAME_VALUE" \
   "VITE_TELEGRAM_APP_SHORT_NAME=$APP_SHORT_NAME_VALUE" \

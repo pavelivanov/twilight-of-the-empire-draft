@@ -19,6 +19,7 @@ RUN npm run build -w @imperium/domain
 RUN npm run build -w @imperium/web
 
 FROM nginx:1.29-alpine
+ENV PORT=8080
 COPY apps/web/nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=build /app/apps/web/dist /usr/share/nginx/html
-EXPOSE 80
+EXPOSE 8080

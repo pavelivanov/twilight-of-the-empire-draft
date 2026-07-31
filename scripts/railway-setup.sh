@@ -104,6 +104,7 @@ ensure_domain() {
     domain="$(domain_from_json <<<"$domains_json")"
   fi
   [[ -n "$domain" ]] || { echo "[$service] Could not resolve a public domain." >&2; exit 1; }
+  railway domain update "$domain" --service "$service" --port "$port" --json >/dev/null
   echo "[$service] Public URL: https://$domain"
 }
 
@@ -220,7 +221,7 @@ node -e '
 ' "$config_result"
 
 ensure_domain "$API_SERVICE" 3001
-ensure_domain "$WEB_SERVICE" 80
+ensure_domain "$WEB_SERVICE" 8080
 
 if [[ "$SKIP_ENV" -eq 0 ]]; then
   bash scripts/railway-env-push.sh \
