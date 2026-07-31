@@ -11,6 +11,38 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { api } from "@/lib/api";
 import "./index.css";
 
+type TelegramWebApp = NonNullable<Window["Telegram"]>["WebApp"];
+
+const telegramViewportEvents: TelegramWebAppEvent[] = [
+  "activated",
+  "viewportChanged",
+  "safeAreaChanged",
+  "contentSafeAreaChanged",
+  "fullscreenChanged",
+];
+
+const fullscreenControlsFallbackTop = 56;
+
+function safeTop(inset?: TelegramSafeAreaInset): number {
+  const top = inset?.top;
+  return typeof top === "number" && Number.isFinite(top) ? Math.max(0, top) : 0;
+}
+
+function syncTelegramContentInset(telegram?: TelegramWebApp): void {
+  const reportedTop = Math.max(
+    safeTop(telegram?.safeAreaInset),
+    safeTop(telegram?.contentSafeAreaInset),
+  );
+  // Some clients report zero while fullscreen chrome is already visible.
+  const fullscreenFallback = telegram?.initData && telegram.isFullscreen
+    ? fullscreenControlsFallbackTop
+    : 0;
+  document.documentElement.style.setProperty(
+    "--app-telegram-content-inset-top",
+    `${Math.max(reportedTop, fullscreenFallback)}px`,
+  );
+}
+
 function App() {
   const [draft, setDraft] = useState<PublicDraft>();
   const [loading, setLoading] = useState(true);
@@ -32,6 +64,12 @@ function App() {
   }, []);
 
   useEffect(() => {
+    const syncContentInset = () => syncTelegramContentInset(telegram);
+    telegramViewportEvents.forEach((event) => telegram?.onEvent?.(event, syncContentInset));
+    window.addEventListener("resize", syncContentInset);
+    window.visualViewport?.addEventListener("resize", syncContentInset);
+
+    syncContentInset();
     telegram?.ready();
     telegram?.setHeaderColor?.("#080a10");
     telegram?.setBackgroundColor?.("#080a10");
@@ -42,6 +80,16 @@ function App() {
     if (telegram?.isVersionAtLeast?.("8.0")) {
       telegram.requestFullscreen?.();
     }
+    const frame = window.requestAnimationFrame(syncContentInset);
+    const transitionCheck = window.setTimeout(syncContentInset, 350);
+
+    return () => {
+      telegramViewportEvents.forEach((event) => telegram?.offEvent?.(event, syncContentInset));
+      window.removeEventListener("resize", syncContentInset);
+      window.visualViewport?.removeEventListener("resize", syncContentInset);
+      window.cancelAnimationFrame(frame);
+      window.clearTimeout(transitionCheck);
+    };
   }, [telegram]);
 
   useEffect(() => {
