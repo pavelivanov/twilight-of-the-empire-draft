@@ -41,6 +41,17 @@ service_exists() {
   '
 }
 
+service_id() {
+  SERVICE_TO_FIND="$1" node -e '
+    const fs = require("node:fs");
+    const parsed = JSON.parse(fs.readFileSync(0, "utf8"));
+    const services = Array.isArray(parsed) ? parsed : parsed.services ?? parsed.data ?? [];
+    const service = services.find((candidate) => candidate?.name === process.env.SERVICE_TO_FIND || candidate?.id === process.env.SERVICE_TO_FIND);
+    if (!service?.id) process.exit(1);
+    process.stdout.write(service.id);
+  '
+}
+
 domain_from_json() {
   node -e '
     const fs = require("node:fs");
@@ -162,28 +173,51 @@ ensure_service "$API_SERVICE" app "$services_json"
 services_json="$(railway service list --json)"
 ensure_service "$WEB_SERVICE" app "$services_json"
 
-echo "[$API_SERVICE] Applying Docker, migration, health, and restart configuration."
-railway environment edit \
-  --service-config "$API_SERVICE" build.builder DOCKERFILE \
-  --service-config "$API_SERVICE" build.dockerfilePath apps/api/Dockerfile \
-  --service-config "$API_SERVICE" build.watchPatterns '["apps/api/**","packages/domain/**","package.json","package-lock.json","tsconfig.base.json"]' \
-  --service-config "$API_SERVICE" deploy.preDeployCommand 'npx prisma migrate deploy --schema apps/api/prisma/schema.prisma' \
-  --service-config "$API_SERVICE" deploy.healthcheckPath /health \
-  --service-config "$API_SERVICE" deploy.healthcheckTimeout 120 \
-  --service-config "$API_SERVICE" deploy.restartPolicyType ON_FAILURE \
-  --service-config "$API_SERVICE" deploy.restartPolicyMaxRetries 10 \
-  --message "Configure Imperium Draft API" >/dev/null
+services_json="$(railway service list --json)"
+api_service_id="$(service_id "$API_SERVICE" <<<"$services_json")"
+web_service_id="$(service_id "$WEB_SERVICE" <<<"$services_json")"
+config_patch="$(API_SERVICE_ID="$api_service_id" WEB_SERVICE_ID="$web_service_id" node -e '
+  process.stdout.write(JSON.stringify({
+    services: {
+      [process.env.API_SERVICE_ID]: {
+        build: {
+          builder: "DOCKERFILE",
+          dockerfilePath: "apps/api/Dockerfile",
+          watchPatterns: ["apps/api/**", "packages/domain/**", "package.json", "package-lock.json", "tsconfig.base.json"],
+        },
+        deploy: {
+          preDeployCommand: "npx prisma migrate deploy --schema apps/api/prisma/schema.prisma",
+          healthcheckPath: "/health",
+          healthcheckTimeout: 120,
+          restartPolicyType: "ON_FAILURE",
+          restartPolicyMaxRetries: 10,
+        },
+      },
+      [process.env.WEB_SERVICE_ID]: {
+        build: {
+          builder: "DOCKERFILE",
+          dockerfilePath: "apps/web/Dockerfile",
+          watchPatterns: ["apps/web/**", "packages/domain/**", "package.json", "package-lock.json", "tsconfig.base.json"],
+        },
+        deploy: {
+          healthcheckPath: "/",
+          healthcheckTimeout: 120,
+          restartPolicyType: "ON_FAILURE",
+          restartPolicyMaxRetries: 10,
+        },
+      },
+    },
+  }));
+')"
 
-echo "[$WEB_SERVICE] Applying Docker, health, and restart configuration."
-railway environment edit \
-  --service-config "$WEB_SERVICE" build.builder DOCKERFILE \
-  --service-config "$WEB_SERVICE" build.dockerfilePath apps/web/Dockerfile \
-  --service-config "$WEB_SERVICE" build.watchPatterns '["apps/web/**","packages/domain/**","package.json","package-lock.json","tsconfig.base.json"]' \
-  --service-config "$WEB_SERVICE" deploy.healthcheckPath / \
-  --service-config "$WEB_SERVICE" deploy.healthcheckTimeout 120 \
-  --service-config "$WEB_SERVICE" deploy.restartPolicyType ON_FAILURE \
-  --service-config "$WEB_SERVICE" deploy.restartPolicyMaxRetries 10 \
-  --message "Configure Imperium Draft web" >/dev/null
+echo "[$API_SERVICE, $WEB_SERVICE] Applying Docker, migration, health, and restart configuration."
+config_result="$(printf '%s' "$config_patch" | railway environment edit --json)"
+node -e '
+  const result = JSON.parse(process.argv[1]);
+  if (result.committed === false && result.message !== "No changes to apply") {
+    throw new Error(result.message ?? "Railway configuration was not committed");
+  }
+' "$config_result"
 
 ensure_domain "$API_SERVICE" 3001
 ensure_domain "$WEB_SERVICE" 80
