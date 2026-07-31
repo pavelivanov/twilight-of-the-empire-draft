@@ -145,6 +145,7 @@ api_url="https://\${{${API_SERVICE}.RAILWAY_PUBLIC_DOMAIN}}"
 echo "[$API_SERVICE] Pushing production configuration (secret values hidden)."
 railway_with_scope variable set \
   "NODE_ENV=production" \
+  "PORT=3001" \
   "DATABASE_URL=$database_url" \
   "WEB_ORIGIN=$web_origin" \
   "APP_URL=$web_origin" \
