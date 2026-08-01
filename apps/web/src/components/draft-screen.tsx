@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
-import { Activity, Check, ChevronRight, Map, Radio, Sparkles, UsersRound } from "lucide-react";
+import { Check, ChevronRight, Radio } from "lucide-react";
 import { toast } from "sonner";
 import type { Faction, Position, PublicDraft, PublicOption } from "@imperium/domain";
 
 import { Brand } from "@/components/brand";
+import { DraftActivity } from "@/components/draft-activity";
+import { DraftNavigation, type DraftView } from "@/components/draft-navigation";
 import { MapBoard } from "@/components/map-board";
 import { SliceCard } from "@/components/slice-board";
 import { Badge } from "@/components/ui/badge";
@@ -11,8 +13,6 @@ import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { api, getDemoIdentity, setDemoIdentity } from "@/lib/api";
 import { cn } from "@/lib/utils";
-
-type View = "draft" | "map" | "activity";
 
 function OptionButton({
   option,
@@ -51,12 +51,15 @@ export function DraftScreen({
   draft,
   onDraft,
   onShowDrafts,
+  view,
+  onViewChange,
 }: {
   draft: PublicDraft;
   onDraft: (draft: PublicDraft) => void;
   onShowDrafts: () => void;
+  view: DraftView;
+  onViewChange: (view: DraftView) => void;
 }) {
-  const [view, setView] = useState<View>("draft");
   const [kind, setKind] = useState<"FACTION" | "SLICE" | "POSITION">("FACTION");
   const [selectedOptionId, setSelectedOptionId] = useState<string>();
   const [busy, setBusy] = useState(false);
@@ -233,30 +236,7 @@ export function DraftScreen({
 
       {view === "map" && <MapBoard draft={draft} />}
 
-      {view === "activity" && (
-        <section className="activity-page">
-          <span className="eyebrow">Immutable history</span>
-          <h1>Draft transmission log</h1>
-          <div className="activity-list">
-            {draft.events.map((event) => {
-              const player = draft.players.find((candidate) => candidate.id === event.playerId);
-              return (
-                <article key={event.id}>
-                  <span><Sparkles aria-hidden="true" /></span>
-                  <div>
-                    <strong>{event.type.replaceAll("_", " ").toLocaleLowerCase()}</strong>
-                    <p>
-                      {player?.displayName}
-                      {event.payload.optionLabel ? ` · ${String(event.payload.optionLabel)}` : ""}
-                    </p>
-                  </div>
-                  <time>{new Date(event.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</time>
-                </article>
-              );
-            })}
-          </div>
-        </section>
-      )}
+      {view === "activity" && <DraftActivity draft={draft} />}
 
       {view === "draft" && selected && (
         <div className="confirm-dock">
@@ -270,20 +250,7 @@ export function DraftScreen({
         </div>
       )}
 
-      <nav className="bottom-nav" aria-label="Primary">
-        <button className={view === "draft" ? "is-active" : ""} onClick={() => setView("draft")}>
-          <UsersRound aria-hidden="true" />
-          Draft
-        </button>
-        <button className={view === "map" ? "is-active" : ""} onClick={() => setView("map")}>
-          <Map aria-hidden="true" />
-          Map
-        </button>
-        <button className={view === "activity" ? "is-active" : ""} onClick={() => setView("activity")}>
-          <Activity aria-hidden="true" />
-          Activity
-        </button>
-      </nav>
+      <DraftNavigation view={view} onViewChange={onViewChange} />
     </main>
   );
 }

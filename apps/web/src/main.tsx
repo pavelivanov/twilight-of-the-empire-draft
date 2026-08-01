@@ -4,6 +4,7 @@ import { Toaster } from "@/components/ui/sonner";
 import type { PublicDraft } from "@imperium/domain";
 
 import { DraftScreen } from "@/components/draft-screen";
+import type { DraftView } from "@/components/draft-navigation";
 import { DraftsScreen } from "@/components/drafts-screen";
 import { LobbyScreen } from "@/components/lobby-screen";
 import { SetupScreen } from "@/components/setup-screen";
@@ -53,6 +54,7 @@ function App() {
   const [screen, setScreen] = useState<"drafts" | "create" | "draft">(
     initialDraftId ? "draft" : "drafts",
   );
+  const [draftView, setDraftView] = useState<DraftView>("draft");
 
   const acceptDraft = useCallback((nextDraft: PublicDraft) => {
     setDraft(nextDraft);
@@ -137,6 +139,7 @@ function App() {
 
   async function openDraft(slug: string) {
     const selectedDraft = await api.getDraft(slug);
+    setDraftView("draft");
     acceptDraft(selectedDraft);
   }
 
@@ -171,9 +174,21 @@ function App() {
       ) : screen === "create" ? (
         <SetupScreen onCreated={acceptDraft} onCancel={showDrafts} />
       ) : draft?.status === "SETUP" ? (
-        <LobbyScreen draft={draft} onDraft={acceptDraft} onShowDrafts={showDrafts} />
+        <LobbyScreen
+          draft={draft}
+          onDraft={acceptDraft}
+          onShowDrafts={showDrafts}
+          view={draftView}
+          onViewChange={setDraftView}
+        />
       ) : draft ? (
-        <DraftScreen draft={draft} onDraft={acceptDraft} onShowDrafts={showDrafts} />
+        <DraftScreen
+          draft={draft}
+          onDraft={acceptDraft}
+          onShowDrafts={showDrafts}
+          view={draftView}
+          onViewChange={setDraftView}
+        />
       ) : (
         <DraftsScreen
           onOpen={openDraft}

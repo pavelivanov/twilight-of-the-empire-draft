@@ -75,6 +75,10 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ version }),
     }),
+  unclaimPlayer: (draftId: string, playerId: string, version: number) =>
+    request<PublicDraft>(`/api/drafts/${draftId}/players/${playerId}/claim?version=${version}`, {
+      method: "DELETE",
+    }),
   removePlayer: (draftId: string, playerId: string, version: number) =>
     request<PublicDraft>(`/api/drafts/${draftId}/players/${playerId}?version=${version}`, {
       method: "DELETE",

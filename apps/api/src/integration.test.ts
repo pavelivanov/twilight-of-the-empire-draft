@@ -147,6 +147,42 @@ describe.sequential("draft management", () => {
     );
   });
 
+  it("only lets a player release their own claimed seat", async () => {
+    if (!managedDraft) throw new Error("Managed draft was not created");
+    const seat = managedDraft.players.find((player) => !player.isClaimed)!;
+    const seatIdentity = `seat-owner-${runId}`;
+    managedDraft = await responseDraft(
+      await app.request(`/api/drafts/${managedDraft.slug}/players/${seat.id}/claim`, {
+        method: "POST",
+        headers: jsonHeaders(seatIdentity, seat.displayName),
+        body: JSON.stringify({ version: managedDraft.version }),
+      }),
+    );
+
+    const rejected = await app.request(
+      `/api/drafts/${managedDraft.slug}/players/${seat.id}/claim?version=${managedDraft.version}`,
+      {
+        method: "DELETE",
+        headers: jsonHeaders(`seat-intruder-${runId}`, "Mallory"),
+      },
+    );
+    expect(rejected.status).toBe(403);
+
+    managedDraft = await responseDraft(
+      await app.request(
+        `/api/drafts/${managedDraft.slug}/players/${seat.id}/claim?version=${managedDraft.version}`,
+        {
+          method: "DELETE",
+          headers: jsonHeaders(seatIdentity, seat.displayName),
+        },
+      ),
+    );
+    expect(managedDraft.players.find((player) => player.id === seat.id)?.isClaimed).toBe(false);
+    expect(managedDraft.events[0]).toEqual(
+      expect.objectContaining({ type: "PLAYER_UNCLAIMED", playerId: seat.id }),
+    );
+  });
+
   it("removes a claimed player before start and reduces the position pool", async () => {
     if (!managedDraft) throw new Error("Managed draft was not created");
     const leavingPlayer = managedDraft.players.find((player) => !player.isClaimed)!;

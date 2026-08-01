@@ -225,6 +225,51 @@ draftsRouter.post(
 );
 
 draftsRouter.delete(
+  "/:draftId/players/:playerId/claim",
+  zValidator("query", z.object({ version: z.coerce.number().int().nonnegative() })),
+  async (context) => {
+    const actor = context.get("actor");
+    const input = context.req.valid("query");
+    const draftId = context.req.param("draftId");
+    const playerId = context.req.param("playerId");
+    await prisma.$transaction(
+      async (transaction) => {
+        const draft = await transaction.draft.findFirst({
+          where: { OR: [{ id: draftId }, { slug: draftId }] },
+          include: { players: true },
+        });
+        if (!draft) throw new ApiError(404, "DRAFT_NOT_FOUND", "Draft not found");
+        if (draft.status !== "SETUP") {
+          throw new ApiError(409, "CLAIMS_CLOSED", "Seats can only be released before the draft starts");
+        }
+        if (draft.version !== input.version) {
+          throw new ApiError(409, "STALE_DRAFT", "The draft changed; refresh and try again");
+        }
+        const player = draft.players.find((candidate) => candidate.id === playerId);
+        if (!player) throw new ApiError(404, "PLAYER_NOT_FOUND", "Player seat not found");
+        if (!player.userId) throw new ApiError(409, "SEAT_NOT_CLAIMED", "That player seat is not claimed");
+        if (player.userId !== actor.userId) {
+          throw new ApiError(403, "SEAT_OWNER_REQUIRED", "Only the player in this seat can release it");
+        }
+        await transaction.draftPlayer.update({ where: { id: player.id }, data: { userId: null } });
+        await transaction.draft.update({ where: { id: draft.id }, data: { version: { increment: 1 } } });
+        await transaction.draftEvent.create({
+          data: {
+            draftId: draft.id,
+            type: "PLAYER_UNCLAIMED",
+            actorUserId: actor.userId,
+            playerId: player.id,
+            payload: { playerName: player.displayName },
+          },
+        });
+      },
+      { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+    );
+    return context.json(await presentDraft(draftId, actor.userId));
+  },
+);
+
+draftsRouter.delete(
   "/:draftId/players/:playerId",
   zValidator("query", z.object({ version: z.coerce.number().int().nonnegative() })),
   async (context) => {
