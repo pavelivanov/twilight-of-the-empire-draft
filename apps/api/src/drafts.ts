@@ -112,8 +112,63 @@ function draftActionsLocked(draft: {
   );
 }
 
+async function activateLegacyDraft(draftIdOrSlug: string): Promise<void> {
+  await withSerializableRetry(async (transaction) => {
+    const draft = await transaction.draft.findFirst({
+      where: { OR: [{ id: draftIdOrSlug }, { slug: draftIdOrSlug }] },
+      include: { players: { orderBy: { orderIndex: "asc" } } },
+    });
+    if (!draft || draft.status !== "SETUP") return;
+
+    const firstPlayer = draft.players[0];
+    if (!firstPlayer) return;
+    const config = draftConfigSchema.parse(draft.config);
+    const withBanPhase = config.bansPerPlayer > 0;
+    const updated = await transaction.draft.updateMany({
+      where: { id: draft.id, status: "SETUP" },
+      data: {
+        status: withBanPhase ? "BANNING" : "DRAFTING",
+        startedAt: new Date(),
+        version: { increment: 1 },
+      },
+    });
+    if (updated.count === 0) return;
+
+    const event = await transaction.draftEvent.create({
+      data: {
+        draftId: draft.id,
+        type: "DRAFT_STARTED",
+        actorUserId: draft.creatorUserId,
+        payload: {
+          activePlayerId: firstPlayer.id,
+          banPhase: withBanPhase,
+          automatic: true,
+          upgradedLegacy: true,
+        },
+      },
+    });
+    if (draft.telegramChatId) {
+      await transaction.notificationOutbox.create({
+        data: {
+          draftId: draft.id,
+          eventId: event.id,
+          chatId: draft.telegramChatId,
+          message: withBanPhase
+            ? `🚀 ${draft.title} has started automatically.\nBan phase first — everyone picks one faction to remove.`
+            : `🚀 ${draft.title} has started automatically.\n${firstPlayer.displayName}, you are first to choose.`,
+        },
+      });
+    }
+  });
+}
+
 draftsRouter.get("/", async (context) => {
   const actor = context.get("actor");
+  const legacyDrafts = await prisma.draft.findMany({
+    where: { creatorUserId: actor.userId, status: "SETUP" },
+    select: { id: true },
+  });
+  await Promise.all(legacyDrafts.map((draft) => activateLegacyDraft(draft.id)));
   const drafts = await prisma.draft.findMany({
     where: { creatorUserId: actor.userId },
     orderBy: { updatedAt: "desc" },
@@ -217,6 +272,7 @@ draftsRouter.post("/", zValidator("json", createDraftSchema), async (context) =>
 
 draftsRouter.get("/:draftId", async (context) => {
   const actor = context.get("actor");
+  await activateLegacyDraft(context.req.param("draftId"));
   const draft = await presentDraft(context.req.param("draftId"), actor.userId);
   if (!draft) throw new ApiError(404, "DRAFT_NOT_FOUND", "Draft not found");
   return context.json(draft);

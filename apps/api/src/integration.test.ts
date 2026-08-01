@@ -9,6 +9,7 @@ const creatorIdentity = `integration-creator-${runId}`;
 let draft: PublicDraft | undefined;
 let creatorPlayerId: string;
 let managedDraft: PublicDraft | undefined;
+let legacyDraft: PublicDraft | undefined;
 const jsonHeaders = (identity: string, name: string) => ({
   "content-type": "application/json",
   "x-demo-user-id": identity,
@@ -214,6 +215,63 @@ describe.sequential("draft lifecycle", () => {
     );
     expect(draft.status).toBe("COMPLETE");
     expect(draft.turnCursor).toBe(draft.totalTurns);
+  });
+});
+
+describe.sequential("legacy draft compatibility", () => {
+  it("activates a legacy SETUP draft for any viewer on first read", async () => {
+    legacyDraft = await responseDraft(
+      await app.request("/api/drafts", {
+        method: "POST",
+        headers: jsonHeaders(creatorIdentity, "Alice"),
+        body: JSON.stringify({
+          title: `Legacy ${runId}`,
+          players: ["Alice", "Bob", "Cara"].map((displayName) => ({ displayName })),
+          seed: `legacy-${runId}`,
+          config: { playerCount: 3, sliceCount: 9, factionCount: 12 },
+        }),
+      }),
+    );
+    const legacyVersion = legacyDraft.version;
+    await prisma.$transaction([
+      prisma.draft.update({
+        where: { id: legacyDraft.id },
+        data: { status: "SETUP", startedAt: null },
+      }),
+      prisma.draftEvent.deleteMany({
+        where: { draftId: legacyDraft.id, type: "DRAFT_STARTED" },
+      }),
+    ]);
+
+    legacyDraft = await responseDraft(
+      await app.request(`/api/drafts/${legacyDraft.slug}`, {
+        headers: jsonHeaders(`legacy-viewer-${runId}`, "Viewer"),
+      }),
+    );
+
+    expect(legacyDraft.status).toBe("DRAFTING");
+    expect(legacyDraft.version).toBe(legacyVersion + 1);
+    expect(legacyDraft.players.filter((player) => player.isClaimed)).toHaveLength(1);
+    expect(legacyDraft.events.filter((event) => event.type === "DRAFT_STARTED")).toHaveLength(1);
+    expect(legacyDraft.events).toContainEqual(
+      expect.objectContaining({
+        type: "DRAFT_STARTED",
+        payload: expect.objectContaining({ automatic: true, upgradedLegacy: true }),
+      }),
+    );
+  });
+
+  it("does not activate the same legacy draft twice", async () => {
+    if (!legacyDraft) throw new Error("Legacy draft was not created");
+    const activatedVersion = legacyDraft.version;
+    legacyDraft = await responseDraft(
+      await app.request(`/api/drafts/${legacyDraft.slug}`, {
+        headers: jsonHeaders(creatorIdentity, "Alice"),
+      }),
+    );
+
+    expect(legacyDraft.version).toBe(activatedVersion);
+    expect(legacyDraft.events.filter((event) => event.type === "DRAFT_STARTED")).toHaveLength(1);
   });
 });
 
@@ -488,6 +546,7 @@ describe.sequential("draft management", () => {
 afterAll(async () => {
   if (draft?.id) await prisma.draft.delete({ where: { id: draft.id } });
   if (managedDraft?.id) await prisma.draft.delete({ where: { id: managedDraft.id } });
+  if (legacyDraft?.id) await prisma.draft.delete({ where: { id: legacyDraft.id } });
   await prisma.user.deleteMany({ where: { telegramId: { contains: runId } } });
   await prisma.$disconnect();
 });
