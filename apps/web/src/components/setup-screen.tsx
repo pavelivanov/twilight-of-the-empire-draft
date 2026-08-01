@@ -1,23 +1,9 @@
 import { useState, type FormEvent } from "react";
-import { Check, ChevronRight, Dices, Users } from "lucide-react";
 import { toast } from "sonner";
 import type { DraftConfig, PublicDraft } from "@imperium/domain";
 
-import { Brand } from "@/components/brand";
-import { Button } from "@/components/ui/button";
-import { Checkbox } from "@/components/ui/checkbox";
-import {
-  Field,
-  FieldDescription,
-  FieldError,
-  FieldGroup,
-  FieldLabel,
-  FieldLegend,
-  FieldSet,
-} from "@/components/ui/field";
-import { Input } from "@/components/ui/input";
-import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { api, setDemoIdentity } from "@/lib/api";
+import { cn } from "@/lib/utils";
 
 const initialPlayers = ["", "", "", "", "", ""];
 
@@ -28,15 +14,25 @@ export function SetupScreen({
   onCreated: (draft: PublicDraft) => void;
   onCancel: () => void;
 }) {
-  const [step, setStep] = useState(1);
   const [title, setTitle] = useState("Friday Night Imperium");
   const [players, setPlayers] = useState(initialPlayers);
   const [playerCount, setPlayerCount] = useState(6);
-  const [factionCount, setFactionCount] = useState("12");
+  const [factionCount, setFactionCount] = useState(12);
+  const [pokEnabled, setPokEnabled] = useState(true);
+  const [bansEnabled, setBansEnabled] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const activePlayers = players.slice(0, playerCount);
+  const minimumFactionCount = bansEnabled ? playerCount * 2 : playerCount;
+
+  function ensureFactionCount(nextMinimum: number) {
+    setFactionCount((current) => {
+      if (current >= nextMinimum) return current;
+      return [9, 12, 15, 18].find((count) => count >= nextMinimum) ?? 18;
+    });
+  }
+
   const validationError = (() => {
-    if (title.trim().length < 3) return "Give the draft a title.";
+    if (title.trim().length < 3) return "Give the table a name.";
     if (activePlayers.some((player) => !player.trim())) return `Name all ${playerCount} players.`;
     if (new Set(activePlayers.map((player) => player.trim().toLocaleLowerCase())).size !== playerCount) {
       return "Player names must be unique.";
@@ -50,20 +46,17 @@ export function SetupScreen({
       toast.error(validationError);
       return;
     }
-    if (step === 1) {
-      setStep(2);
-      return;
-    }
     setSubmitting(true);
     try {
-      setDemoIdentity({ id: "creator", name: activePlayers[0]! });
+      setDemoIdentity({ id: "creator", name: activePlayers[0]!.trim() });
       const config: DraftConfig = {
         playerCount,
         sliceCount: 9,
-        factionCount: Number(factionCount),
-        sets: ["Base Game", "Prophecy of Kings"],
+        factionCount,
+        bansPerPlayer: bansEnabled ? 1 : 0,
+        sets: pokEnabled ? ["Base Game", "Prophecy of Kings"] : ["Base Game"],
         balance: {
-          minimumLegendaryPlanets: 2,
+          minimumLegendaryPlanets: pokEnabled ? 2 : 0,
           minimumOptimalInfluence: 4,
           minimumOptimalResources: 2.5,
           minimumOptimalTotal: 9,
@@ -75,13 +68,13 @@ export function SetupScreen({
         },
       };
       const draft = await api.createDraft({
-        title,
-        players: activePlayers.map((displayName) => ({ displayName })),
+        title: title.trim(),
+        players: activePlayers.map((displayName) => ({ displayName: displayName.trim() })),
         config,
       });
       const creatorPlayer = draft.players.find((player) => player.isCurrentUser);
       if (creatorPlayer) localStorage.setItem("imperium-demo-creator-player", creatorPlayer.id);
-      toast.success("Balanced pool generated");
+      toast.success("Pool generated · 9 slices");
       onCreated(draft);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Could not create the draft");
@@ -90,170 +83,241 @@ export function SetupScreen({
     }
   }
 
-  return (
-    <main className="setup-shell">
-      <header className="setup-header">
-        <Brand />
-        <div className="setup-header-actions">
-          <Button variant="ghost" size="sm" onClick={onCancel}>
-            My drafts
-          </Button>
-          <span className="step-indicator">0{step} / 02</span>
-        </div>
-      </header>
-      <form className="setup-layout" onSubmit={submit}>
-        <section className="setup-intro">
-          <span className="eyebrow">New {playerCount}-player draft</span>
-          <h1>
-            Assemble the table.
-            <br />
-            <em>Let the galaxy decide.</em>
-          </h1>
-          <p>
-            Choose 3–6 players, name the table, and generate a reproducible balanced Milty pool.
-            Everyone claims their Telegram identity before the first pick.
-          </p>
-          <div className="setup-steps" aria-label="Setup progress">
-            <span className={step >= 1 ? "is-active" : ""}>
-              <i>{step > 1 ? <Check aria-hidden="true" /> : "1"}</i>
-              Table
-            </span>
-            <span className={step >= 2 ? "is-active" : ""}>
-              <i>2</i>
-              Rules
-            </span>
-          </div>
-        </section>
+  const factionPool = pokEnabled ? 24 : 17;
 
-        <div className="setup-form-panel">
-          {step === 1 ? (
-            <FieldGroup>
-              <Field>
-                <FieldLabel>Table size</FieldLabel>
-                <ToggleGroup
-                  value={[String(playerCount)]}
-                  onValueChange={(value) => value[0] && setPlayerCount(Number(value[0]))}
-                  variant="outline"
-                  spacing={0}
-                  className="w-full"
-                  aria-label="Number of players"
-                >
-                  {[3, 4, 5, 6].map((count) => (
-                    <ToggleGroupItem key={count} value={String(count)} className="h-10 flex-1">
-                      {count}
-                    </ToggleGroupItem>
-                  ))}
-                </ToggleGroup>
-                <FieldDescription>You can remove seats in the lobby later, down to three players.</FieldDescription>
-              </Field>
-              <Field>
-                <FieldLabel htmlFor="draft-title">Draft name</FieldLabel>
-                <Input
-                  id="draft-title"
-                  value={title}
-                  onChange={(event) => setTitle(event.target.value)}
-                  placeholder="Friday Night Imperium"
+  return (
+    <main className="room-shell">
+      <header className="room-topbar">
+        <button
+          type="button"
+          onClick={onCancel}
+          style={{
+            background: "none",
+            border: "none",
+            padding: "0 8px 0 0",
+            font: "400 13px/1 var(--font-sans)",
+            color: "var(--dim)",
+            height: 32,
+            display: "inline-flex",
+            alignItems: "center",
+          }}
+        >
+          ‹ Drafts
+        </button>
+        <div className="mono-label" style={{ color: "#e6e3da", letterSpacing: "0.13em", fontSize: 11 }}>
+          NEW DRAFT
+        </div>
+        <div style={{ width: 44 }} />
+      </header>
+
+      <form className="setup-scroll" onSubmit={submit}>
+        <h1 className="serif-title" style={{ margin: "0 0 16px" }}>
+          Table setup
+        </h1>
+
+        <div className="field-card">
+          <div className="mono-label" style={{ marginBottom: 8, fontSize: 9.5, letterSpacing: "0.14em" }}>
+            TABLE NAME
+          </div>
+          <input
+            className="naked-input"
+            value={title}
+            onChange={(event) => setTitle(event.target.value)}
+            placeholder="Friday Night Imperium"
+            autoComplete="off"
+          />
+        </div>
+
+        <div className="field-card">
+          <div className="field-card-head">
+            <div className="mono-label" style={{ fontSize: 9.5, letterSpacing: "0.14em" }}>
+              PLAYERS
+            </div>
+            <em>9 slices generated</em>
+          </div>
+          <div className="count-grid">
+            {[3, 4, 5, 6].map((count) => (
+              <button
+                key={count}
+                type="button"
+                className={cn("count-chip", count === playerCount && "is-active")}
+                onClick={() => {
+                  setPlayerCount(count);
+                  if (bansEnabled) ensureFactionCount(count * 2);
+                }}
+              >
+                {count}
+              </button>
+            ))}
+          </div>
+          <div style={{ marginTop: 10 }}>
+            {activePlayers.map((player, index) => (
+              <div key={index} className="player-name-row">
+                <span>{index + 1}</span>
+                <input
+                  className="naked-input is-sm"
+                  style={{ borderBottom: "none", padding: 0 }}
+                  value={player}
+                  onChange={(event) =>
+                    setPlayers((current) =>
+                      current.map((value, playerIndex) => (playerIndex === index ? event.target.value : value)),
+                    )
+                  }
+                  placeholder={index === 0 ? "Your name" : "Player name"}
                   autoComplete="off"
                 />
-                <FieldDescription>This appears in the group bot messages.</FieldDescription>
-              </Field>
-              <FieldSet>
-                <FieldLegend variant="label">Players</FieldLegend>
-                <FieldDescription>Player one is you. Draft order is randomized on creation.</FieldDescription>
-                <div className="player-input-grid">
-                  {activePlayers.map((player, index) => (
-                    <Field key={index}>
-                      <FieldLabel htmlFor={`player-${index}`}>Player {index + 1}</FieldLabel>
-                      <div className="player-input">
-                        <span>{index + 1}</span>
-                        <Input
-                          id={`player-${index}`}
-                          value={player}
-                          onChange={(event) =>
-                            setPlayers((current) =>
-                              current.map((value, playerIndex) =>
-                                playerIndex === index ? event.target.value : value,
-                              ),
-                            )
-                          }
-                          placeholder={index === 0 ? "Your name" : "Player name"}
-                          autoComplete="off"
-                        />
-                      </div>
-                    </Field>
-                  ))}
-                </div>
-              </FieldSet>
-              {validationError && activePlayers.every(Boolean) && <FieldError>{validationError}</FieldError>}
-            </FieldGroup>
-          ) : (
-            <FieldGroup>
-              <FieldSet>
-                <FieldLegend>Galaxy catalog</FieldLegend>
-                <FieldDescription>
-                  Base Game systems are always included. Prophecy of Kings adds factions and legendary planets.
-                </FieldDescription>
-                <FieldLabel className="choice-field">
-                  <Checkbox
-                    checked
-                    disabled
-                  />
-                  <span>
-                    <strong>Prophecy of Kings</strong>
-                    <small>Required in v1 · legendary systems and seven additional factions</small>
-                  </span>
-                </FieldLabel>
-              </FieldSet>
-              <Field>
-                <FieldLabel>Faction pool</FieldLabel>
-                <ToggleGroup
-                  value={[factionCount]}
-                  onValueChange={(value) => value[0] && setFactionCount(value[0])}
-                  variant="outline"
-                  spacing={0}
-                  className="w-full"
-                >
-                  {["9", "12", "15", "18"].map((count) => (
-                    <ToggleGroupItem key={count} value={count} className="h-10 flex-1">
-                      {count}
-                    </ToggleGroupItem>
-                  ))}
-                </ToggleGroup>
-                <FieldDescription>
-                  More factions create more strategic choice; slices stay at nine for every table size.
-                </FieldDescription>
-              </Field>
-              <div className="balance-brief">
-                <div>
-                  <Dices aria-hidden="true" />
-                  <span>
-                    <strong>Seeded & reproducible</strong>
-                    Every generated pool can be audited or regenerated.
-                  </span>
-                </div>
-                <div>
-                  <Users aria-hidden="true" />
-                  <span>
-                    <strong>Tier-balanced slices</strong>
-                    One low, one mid, one high blue system plus two red systems.
-                  </span>
-                </div>
               </div>
-            </FieldGroup>
-          )}
-
-          <div className="setup-actions">
-            {step === 2 && (
-              <Button type="button" variant="ghost" size="lg" onClick={() => setStep(1)}>
-                Back
-              </Button>
-            )}
-            <Button type="submit" size="lg" disabled={submitting} className="ml-auto min-w-40">
-              {step === 1 ? "Configure rules" : submitting ? "Balancing…" : "Generate draft"}
-              <ChevronRight data-icon="inline-end" aria-hidden="true" />
-            </Button>
+            ))}
+          </div>
+          <div style={{ font: "400 11.5px/1.4 var(--font-sans)", color: "var(--muted-foreground)", marginTop: 6 }}>
+            Player one is you. Everyone claims their seat from the invite link.
           </div>
         </div>
+
+        <div className="field-card" style={{ paddingBottom: 4 }}>
+          <div className="field-card-head">
+            <div className="mono-label" style={{ fontSize: 9.5, letterSpacing: "0.14em" }}>
+              EXPANSIONS
+            </div>
+            <em>{factionPool} factions in pool</em>
+          </div>
+          <div>
+            <div className="check-row is-on is-locked">
+              <span className="check-box">✓</span>
+              <span className="check-row-main">
+                <strong>Base Game</strong>
+                <small>The original 17 factions and system tiles.</small>
+              </span>
+              <em>ALWAYS ON</em>
+            </div>
+            <button
+              type="button"
+              className={cn("check-row", pokEnabled && "is-on")}
+              onClick={() => setPokEnabled((value) => !value)}
+            >
+              <span className="check-box">{pokEnabled ? "✓" : ""}</span>
+              <span className="check-row-main">
+                <strong>Prophecy of Kings</strong>
+                <small>Official expansion — 7 factions, legendary planets, new anomalies.</small>
+              </span>
+            </button>
+          </div>
+        </div>
+
+        <div className="field-card">
+          <div className="field-card-head">
+            <div className="mono-label" style={{ fontSize: 9.5, letterSpacing: "0.14em" }}>
+              FACTION POOL
+            </div>
+            <em>{factionCount} drafted from {factionPool}</em>
+          </div>
+          <div className="count-grid">
+            {[9, 12, 15, 18].map((count) => {
+              const tooSmall = count < minimumFactionCount;
+              return (
+                <button
+                  key={count}
+                  type="button"
+                  className={cn("count-chip", count === factionCount && "is-active")}
+                  style={tooSmall ? { opacity: 0.35 } : undefined}
+                  onClick={() => {
+                    if (tooSmall) {
+                      toast.info(`With bans on, ${playerCount} players need at least ${minimumFactionCount} factions.`);
+                      return;
+                    }
+                    setFactionCount(count);
+                  }}
+                >
+                  {count}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        <div className="field-card" style={{ padding: 0, overflow: "hidden" }}>
+          <button
+            type="button"
+            onClick={() => {
+              setBansEnabled((value) => {
+                const next = !value;
+                if (next) ensureFactionCount(playerCount * 2);
+                return next;
+              });
+            }}
+            style={{
+              width: "100%",
+              textAlign: "left",
+              background: "none",
+              border: "none",
+              padding: "13px 14px",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: 12,
+            }}
+          >
+            <div style={{ flex: "1 1 auto", minWidth: 0 }}>
+              <div style={{ font: "500 14px/1.2 var(--font-sans)", color: "var(--foreground)", marginBottom: 3 }}>
+                Ban phase
+              </div>
+              <div style={{ font: "400 11.5px/1.35 var(--font-sans)", color: "var(--muted-foreground)" }}>
+                Each player bans one faction before drafting
+              </div>
+            </div>
+            <div
+              style={{
+                font: "500 12px/1 var(--font-mono)",
+                color: bansEnabled ? "var(--lime)" : "var(--faint)",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {bansEnabled ? "On · 1 each" : "Off"} ›
+            </div>
+          </button>
+          {[
+            { label: "Draft order", hint: "Snake, three rounds — slice, faction and seat each", value: "Snake" },
+            { label: "Slices", hint: "Nine balanced slices for every table size", value: "9 · Milty" },
+            { label: "Map", hint: "Standard field with Mecatol Rex at the centre", value: "Standard" },
+          ].map((row) => (
+            <div
+              key={row.label}
+              style={{
+                padding: "13px 14px",
+                borderTop: "1px solid var(--line-2)",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 12,
+              }}
+            >
+              <div style={{ flex: "1 1 auto", minWidth: 0 }}>
+                <div style={{ font: "500 14px/1.2 var(--font-sans)", color: "var(--foreground)", marginBottom: 3 }}>
+                  {row.label}
+                </div>
+                <div style={{ font: "400 11.5px/1.35 var(--font-sans)", color: "var(--muted-foreground)" }}>
+                  {row.hint}
+                </div>
+              </div>
+              <div style={{ font: "500 12px/1 var(--font-mono)", color: "var(--lime)", whiteSpace: "nowrap" }}>
+                {row.value}
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <div className="hint-callout" style={{ margin: "10px 0 18px" }}>
+          <i aria-hidden="true" />
+          <p>
+            Slices are balanced on optimal resources and influence. You can regenerate the pool until the draft
+            starts.
+          </p>
+        </div>
+
+        <button type="submit" className="btn-accent is-block" disabled={submitting}>
+          {submitting ? "Balancing…" : "Generate pool"}
+        </button>
+        <div style={{ height: 20 }} />
       </form>
     </main>
   );

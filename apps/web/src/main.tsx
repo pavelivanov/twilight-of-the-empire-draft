@@ -56,9 +56,10 @@ function App() {
   );
   const [draftView, setDraftView] = useState<DraftView>("draft");
 
-  const acceptDraft = useCallback((nextDraft: PublicDraft) => {
+  const acceptDraft = useCallback((nextDraft: PublicDraft, resetView = false) => {
     setDraft(nextDraft);
     setScreen("draft");
+    if (resetView) setDraftView(nextDraft.status === "SETUP" ? "table" : "draft");
     localStorage.setItem("imperium-last-draft", nextDraft.slug);
     const url = new URL(window.location.href);
     url.searchParams.set("draft", nextDraft.slug);
@@ -73,9 +74,9 @@ function App() {
 
     syncContentInset();
     telegram?.ready();
-    telegram?.setHeaderColor?.("#080a10");
-    telegram?.setBackgroundColor?.("#080a10");
-    telegram?.setBottomBarColor?.("#080a10");
+    telegram?.setHeaderColor?.("#0b0e13");
+    telegram?.setBackgroundColor?.("#0b0e13");
+    telegram?.setBottomBarColor?.("#0b0e13");
     telegram?.enableClosingConfirmation?.();
     telegram?.disableVerticalSwipes?.();
     telegram?.expand();
@@ -102,7 +103,7 @@ function App() {
     let active = true;
     api
       .getDraft(initialDraftId)
-      .then((value) => active && acceptDraft(value))
+      .then((value) => active && acceptDraft(value, true))
       .catch(() => {
         if (active) {
           localStorage.removeItem("imperium-last-draft");
@@ -139,8 +140,7 @@ function App() {
 
   async function openDraft(slug: string) {
     const selectedDraft = await api.getDraft(slug);
-    setDraftView("draft");
-    acceptDraft(selectedDraft);
+    acceptDraft(selectedDraft, true);
   }
 
   function handleDeleted(slug: string) {
@@ -172,7 +172,7 @@ function App() {
           onDeleted={handleDeleted}
         />
       ) : screen === "create" ? (
-        <SetupScreen onCreated={acceptDraft} onCancel={showDrafts} />
+        <SetupScreen onCreated={(created) => acceptDraft(created, true)} onCancel={showDrafts} />
       ) : draft?.status === "SETUP" ? (
         <LobbyScreen
           draft={draft}

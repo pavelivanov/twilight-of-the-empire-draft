@@ -39,7 +39,7 @@ export async function presentDraft(
     version: draft.version,
     turnCursor: draft.turnCursor,
     totalTurns: turnOrder.length,
-    activePlayerId: turnOrder[draft.turnCursor] ?? null,
+    activePlayerId: draft.status === "BANNING" ? null : (turnOrder[draft.turnCursor] ?? null),
     creatorUserId: draft.creatorUserId,
     currentUserId,
     canManage: draft.creatorUserId === currentUserId,
@@ -63,6 +63,7 @@ export async function presentDraft(
       sortOrder: option.sortOrder,
       payload: option.payload as Record<string, unknown>,
       selectedByPlayerId: option.selectedByPlayerId,
+      bannedByPlayerId: option.bannedByPlayerId,
     })),
     events: draft.events.map((event) => ({
       id: event.id,

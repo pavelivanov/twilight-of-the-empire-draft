@@ -9,6 +9,7 @@ datasource db {
 
 enum DraftStatus {
   SETUP
+  BANNING
   DRAFTING
   COMPLETE
   ARCHIVED
@@ -27,6 +28,8 @@ enum EventType {
   PLAYER_CLAIMED
   PLAYER_UNCLAIMED
   PLAYER_REMOVED
+  PLAYER_BANNED
+  BAN_PHASE_COMPLETED
   OPTION_SELECTED
   CHAT_BOUND
   PICK_REVERTED
@@ -91,6 +94,7 @@ model DraftPlayer {
   draft             Draft         @relation(fields: [draftId], references: [id], onDelete: Cascade)
   user              User?         @relation(fields: [userId], references: [id])
   selectedOptions   DraftOption[] @relation("SelectedBy")
+  bannedOptions     DraftOption[] @relation("BannedBy")
   events            DraftEvent[]
 
   @@unique([draftId, orderIndex])
@@ -108,8 +112,11 @@ model DraftOption {
   payload            Json
   selectedByPlayerId String?
   selectedAt         DateTime?
+  bannedByPlayerId   String?
+  bannedAt           DateTime?
   draft              Draft        @relation(fields: [draftId], references: [id], onDelete: Cascade)
   selectedBy         DraftPlayer? @relation("SelectedBy", fields: [selectedByPlayerId], references: [id])
+  bannedBy           DraftPlayer? @relation("BannedBy", fields: [bannedByPlayerId], references: [id])
 
   @@unique([draftId, kind, key])
   @@index([draftId, kind, selectedByPlayerId])

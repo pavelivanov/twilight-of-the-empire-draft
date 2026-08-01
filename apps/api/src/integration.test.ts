@@ -108,6 +108,124 @@ describe.sequential("draft lifecycle", () => {
   });
 });
 
+describe.sequential("ban phase", () => {
+  let banDraft: PublicDraft | undefined;
+
+  it("rejects a faction pool too small for bans", async () => {
+    const response = await app.request("/api/drafts", {
+      method: "POST",
+      headers: jsonHeaders(creatorIdentity, "Alice"),
+      body: JSON.stringify({
+        title: `Ban invalid ${runId}`,
+        players: ["Alice", "Bob", "Cara", "Dan", "Eve", "Finn"].map((displayName) => ({ displayName })),
+        seed: `ban-invalid-${runId}`,
+        config: { playerCount: 6, factionCount: 9, bansPerPlayer: 1 },
+      }),
+    });
+    expect(response.status).toBe(400);
+  });
+
+  it("creates a draft with bans enabled and enters BANNING on start", async () => {
+    const response = await app.request("/api/drafts", {
+      method: "POST",
+      headers: jsonHeaders(creatorIdentity, "Alice"),
+      body: JSON.stringify({
+        title: `Ban lifecycle ${runId}`,
+        players: ["Alice", "Bob", "Cara"].map((displayName) => ({ displayName })),
+        seed: `ban-${runId}`,
+        config: { playerCount: 3, factionCount: 9, bansPerPlayer: 1 },
+      }),
+    });
+    banDraft = await responseDraft(response);
+    expect(banDraft.config.bansPerPlayer).toBe(1);
+
+    for (const player of banDraft.players.filter((candidate) => !candidate.isClaimed)) {
+      banDraft = await responseDraft(
+        await app.request(`/api/drafts/${banDraft.slug}/players/${player.id}/claim`, {
+          method: "POST",
+          headers: jsonHeaders(`ban-${player.id}`, player.displayName),
+          body: JSON.stringify({ version: banDraft.version }),
+        }),
+      );
+    }
+    banDraft = await responseDraft(
+      await app.request(`/api/drafts/${banDraft.slug}/start`, {
+        method: "POST",
+        headers: jsonHeaders(creatorIdentity, "Alice"),
+        body: JSON.stringify({ version: banDraft.version }),
+      }),
+    );
+    expect(banDraft.status).toBe("BANNING");
+    expect(banDraft.activePlayerId).toBeNull();
+  });
+
+  it("rejects picks during the ban phase", async () => {
+    if (!banDraft) throw new Error("Ban draft was not created");
+    const option = banDraft.options.find((candidate) => candidate.kind === "SLICE")!;
+    const response = await app.request(`/api/drafts/${banDraft.slug}/picks`, {
+      method: "POST",
+      headers: jsonHeaders(creatorIdentity, "Alice"),
+      body: JSON.stringify({ optionId: option.id, version: banDraft.version, idempotencyKey: crypto.randomUUID() }),
+    });
+    expect(response.status).toBe(409);
+  });
+
+  it("locks one ban per player and flips to DRAFTING when all lock", async () => {
+    if (!banDraft) throw new Error("Ban draft was not created");
+    const creatorSeatId = banDraft.players.find((player) => player.isCurrentUser)!.id;
+    const seats = banDraft.players.map((player) => ({ id: player.id, name: player.displayName }));
+
+    for (const seat of seats) {
+      const faction = banDraft.options.find(
+        (candidate) => candidate.kind === "FACTION" && !candidate.bannedByPlayerId,
+      )!;
+      const identity = seat.id === creatorSeatId ? creatorIdentity : `ban-${seat.id}`;
+      banDraft = await responseDraft(
+        await app.request(`/api/drafts/${banDraft.slug}/bans`, {
+          method: "POST",
+          headers: jsonHeaders(identity, seat.name),
+          body: JSON.stringify({ optionId: faction.id, version: banDraft.version, idempotencyKey: crypto.randomUUID() }),
+        }),
+      );
+    }
+
+    expect(banDraft.status).toBe("DRAFTING");
+    expect(banDraft.activePlayerId).toBe(banDraft.players[0]!.id);
+    expect(banDraft.options.filter((option) => option.bannedByPlayerId)).toHaveLength(3);
+    expect(banDraft.events.filter((event) => event.type === "PLAYER_BANNED")).toHaveLength(3);
+    expect(banDraft.events.some((event) => event.type === "BAN_PHASE_COMPLETED")).toBe(true);
+  });
+
+  it("rejects a second ban and picks of banned factions", async () => {
+    if (!banDraft) throw new Error("Ban draft was not created");
+    banDraft = await responseDraft(
+      await app.request(`/api/drafts/${banDraft.slug}`, { headers: jsonHeaders(creatorIdentity, "Alice") }),
+    );
+    const banned = banDraft.options.find((option) => option.kind === "FACTION" && option.bannedByPlayerId)!;
+    const secondBan = await app.request(`/api/drafts/${banDraft.slug}/bans`, {
+      method: "POST",
+      headers: jsonHeaders(creatorIdentity, "Alice"),
+      body: JSON.stringify({ optionId: banned.id, version: banDraft.version, idempotencyKey: crypto.randomUUID() }),
+    });
+    expect(secondBan.status).toBe(409);
+
+    const activePlayer = banDraft.players.find((player) => player.id === banDraft!.activePlayerId)!;
+    const activeIdentity = activePlayer.isCurrentUser ? creatorIdentity : `ban-${activePlayer.id}`;
+    const bannedPick = await app.request(`/api/drafts/${banDraft.slug}/picks`, {
+      method: "POST",
+      headers: jsonHeaders(activeIdentity, activePlayer.displayName),
+      body: JSON.stringify({ optionId: banned.id, version: banDraft.version, idempotencyKey: crypto.randomUUID() }),
+    });
+    expect(bannedPick.status).toBe(409);
+    const body = (await bannedPick.json()) as { error?: { code?: string } };
+    expect(body.error?.code).toBe("OPTION_BANNED");
+  });
+
+  afterAll(async () => {
+    if (banDraft?.id) await prisma.draft.delete({ where: { id: banDraft.id } });
+  });
+});
+
 describe.sequential("draft management", () => {
   it("lists a creator's drafts", async () => {
     const response = await app.request("/api/drafts", {

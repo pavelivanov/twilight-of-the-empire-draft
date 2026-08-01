@@ -98,4 +98,9 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ optionId, version, idempotencyKey: crypto.randomUUID() }),
     }),
+  ban: (draftId: string, optionId: string, version: number) =>
+    request<PublicDraft>(`/api/drafts/${draftId}/bans`, {
+      method: "POST",
+      body: JSON.stringify({ optionId, version, idempotencyKey: crypto.randomUUID() }),
+    }),
 };

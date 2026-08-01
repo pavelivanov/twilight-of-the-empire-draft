@@ -3,7 +3,7 @@ import { z } from "zod";
 export const optionKinds = ["FACTION", "SLICE", "POSITION"] as const;
 export type OptionKind = (typeof optionKinds)[number];
 
-export const draftStatuses = ["SETUP", "DRAFTING", "COMPLETE", "ARCHIVED"] as const;
+export const draftStatuses = ["SETUP", "BANNING", "DRAFTING", "COMPLETE", "ARCHIVED"] as const;
 export type DraftStatus = (typeof draftStatuses)[number];
 
 export const techSpecialties = ["biotic", "warfare", "propulsion", "cybernetic"] as const;
@@ -86,6 +86,7 @@ export const draftConfigSchema = z.object({
   playerCount: z.number().int().min(3).max(6).default(6),
   sliceCount: z.literal(9).default(9),
   factionCount: z.number().int().min(6).max(24).default(12),
+  bansPerPlayer: z.number().int().min(0).max(1).default(0),
   sets: z
     .array(z.enum(["Base Game", "Prophecy of Kings"]))
     .min(1)
@@ -132,7 +133,15 @@ export const createDraftSchema = z.object({
 }).refine((input) => input.players.length === input.config.playerCount, {
   message: "Player count must match the configured table size",
   path: ["players"],
-});
+}).refine(
+  (input) =>
+    input.config.factionCount - input.config.playerCount * input.config.bansPerPlayer >=
+    input.config.playerCount,
+  {
+    message: "The faction pool must keep at least one faction per player after bans",
+    path: ["config", "factionCount"],
+  },
+);
 
 export const pickSchema = z.object({
   optionId: z.string().min(1),
@@ -159,6 +168,7 @@ export type PublicOption = {
   sortOrder: number;
   payload: Record<string, unknown>;
   selectedByPlayerId?: string | null;
+  bannedByPlayerId?: string | null;
 };
 
 export type PublicDraft = {
