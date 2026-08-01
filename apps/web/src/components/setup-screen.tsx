@@ -1,4 +1,5 @@
 import { useState, type FormEvent } from "react";
+import { CheckIcon, ChevronLeftIcon, ChevronRightIcon } from "lucide-react";
 import { toast } from "sonner";
 import type { DraftConfig, PublicDraft } from "@imperium/domain";
 
@@ -18,7 +19,6 @@ export function SetupScreen({
   const [players, setPlayers] = useState(initialPlayers);
   const [playerCount, setPlayerCount] = useState(6);
   const [factionCount, setFactionCount] = useState(12);
-  const [pokEnabled, setPokEnabled] = useState(true);
   const [bansEnabled, setBansEnabled] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const activePlayers = players.slice(0, playerCount);
@@ -54,9 +54,9 @@ export function SetupScreen({
         sliceCount: 9,
         factionCount,
         bansPerPlayer: bansEnabled ? 1 : 0,
-        sets: pokEnabled ? ["Base Game", "Prophecy of Kings"] : ["Base Game"],
+        sets: ["Base Game", "Prophecy of Kings"],
         balance: {
-          minimumLegendaryPlanets: pokEnabled ? 2 : 0,
+          minimumLegendaryPlanets: 2,
           minimumOptimalInfluence: 4,
           minimumOptimalResources: 2.5,
           minimumOptimalTotal: 9,
@@ -83,7 +83,7 @@ export function SetupScreen({
     }
   }
 
-  const factionPool = pokEnabled ? 24 : 17;
+  const factionPool = 24;
 
   return (
     <main className="room-shell">
@@ -100,9 +100,11 @@ export function SetupScreen({
             height: 32,
             display: "inline-flex",
             alignItems: "center",
+            gap: 3,
           }}
         >
-          ‹ Drafts
+          <ChevronLeftIcon className="text-action-icon" aria-hidden="true" />
+          Drafts
         </button>
         <div className="mono-label" style={{ color: "#e6e3da", letterSpacing: "0.13em", fontSize: 11 }}>
           NEW DRAFT
@@ -116,10 +118,16 @@ export function SetupScreen({
         </h1>
 
         <div className="field-card">
-          <div className="mono-label" style={{ marginBottom: 8, fontSize: 9.5, letterSpacing: "0.14em" }}>
+          <label
+            htmlFor="draft-title"
+            className="mono-label"
+            style={{ display: "block", marginBottom: 8, fontSize: 9.5, letterSpacing: "0.14em" }}
+          >
             TABLE NAME
-          </div>
+          </label>
           <input
+            id="draft-title"
+            name="title"
             className="naked-input"
             value={title}
             onChange={(event) => setTitle(event.target.value)}
@@ -135,12 +143,13 @@ export function SetupScreen({
             </div>
             <em>9 slices generated</em>
           </div>
-          <div className="count-grid">
+          <div className="count-grid" role="group" aria-label="Number of players">
             {[3, 4, 5, 6].map((count) => (
               <button
                 key={count}
                 type="button"
                 className={cn("count-chip", count === playerCount && "is-active")}
+                aria-pressed={count === playerCount}
                 onClick={() => {
                   setPlayerCount(count);
                   if (bansEnabled) ensureFactionCount(count * 2);
@@ -154,7 +163,12 @@ export function SetupScreen({
             {activePlayers.map((player, index) => (
               <div key={index} className="player-name-row">
                 <span>{index + 1}</span>
+                <label htmlFor={`player-${index}`} className="sr-only">
+                  Player {index + 1} name
+                </label>
                 <input
+                  id={`player-${index}`}
+                  name={`players[${index}]`}
                   className="naked-input is-sm"
                   style={{ borderBottom: "none", padding: 0 }}
                   value={player}
@@ -183,24 +197,25 @@ export function SetupScreen({
           </div>
           <div>
             <div className="check-row is-on is-locked">
-              <span className="check-box">✓</span>
+              <span className="check-box">
+                <CheckIcon aria-hidden="true" />
+              </span>
               <span className="check-row-main">
                 <strong>Base Game</strong>
                 <small>The original 17 factions and system tiles.</small>
               </span>
               <em>ALWAYS ON</em>
             </div>
-            <button
-              type="button"
-              className={cn("check-row", pokEnabled && "is-on")}
-              onClick={() => setPokEnabled((value) => !value)}
-            >
-              <span className="check-box">{pokEnabled ? "✓" : ""}</span>
+            <div className="check-row is-on is-locked">
+              <span className="check-box">
+                <CheckIcon aria-hidden="true" />
+              </span>
               <span className="check-row-main">
                 <strong>Prophecy of Kings</strong>
-                <small>Official expansion — 7 factions, legendary planets, new anomalies.</small>
+                <small>Required in v1 for the nine-slice system pool.</small>
               </span>
-            </button>
+              <em>REQUIRED V1</em>
+            </div>
           </div>
         </div>
 
@@ -211,7 +226,7 @@ export function SetupScreen({
             </div>
             <em>{factionCount} drafted from {factionPool}</em>
           </div>
-          <div className="count-grid">
+          <div className="count-grid" role="group" aria-label="Faction pool size">
             {[9, 12, 15, 18].map((count) => {
               const tooSmall = count < minimumFactionCount;
               return (
@@ -220,6 +235,8 @@ export function SetupScreen({
                   type="button"
                   className={cn("count-chip", count === factionCount && "is-active")}
                   style={tooSmall ? { opacity: 0.35 } : undefined}
+                  aria-pressed={count === factionCount}
+                  aria-disabled={tooSmall}
                   onClick={() => {
                     if (tooSmall) {
                       toast.info(`With bans on, ${playerCount} players need at least ${minimumFactionCount} factions.`);
@@ -238,6 +255,7 @@ export function SetupScreen({
         <div className="field-card" style={{ padding: 0, overflow: "hidden" }}>
           <button
             type="button"
+            aria-pressed={bansEnabled}
             onClick={() => {
               setBansEnabled((value) => {
                 const next = !value;
@@ -270,9 +288,13 @@ export function SetupScreen({
                 font: "500 12px/1 var(--font-mono)",
                 color: bansEnabled ? "var(--lime)" : "var(--faint)",
                 whiteSpace: "nowrap",
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 3,
               }}
             >
-              {bansEnabled ? "On · 1 each" : "Off"} ›
+              <span>{bansEnabled ? "On · 1 each" : "Off"}</span>
+              <ChevronRightIcon className="text-action-icon" aria-hidden="true" />
             </div>
           </button>
           {[

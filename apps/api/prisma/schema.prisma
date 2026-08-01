@@ -119,6 +119,7 @@ model DraftOption {
   bannedBy           DraftPlayer? @relation("BannedBy", fields: [bannedByPlayerId], references: [id])
 
   @@unique([draftId, kind, key])
+  @@unique([draftId, bannedByPlayerId])
   @@index([draftId, kind, selectedByPlayerId])
 }
 

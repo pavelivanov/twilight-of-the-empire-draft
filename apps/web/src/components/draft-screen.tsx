@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { CheckIcon } from "lucide-react";
 import { toast } from "sonner";
 import type { Faction, Position, PublicDraft, PublicOption } from "@imperium/domain";
 
@@ -235,7 +236,11 @@ export function DraftScreen({
                     >
                       <span className="board-slot-head">
                         <small>{slot.kicker}</small>
-                        {filled && <em>✓</em>}
+                        {filled && (
+                          <em>
+                            <CheckIcon aria-hidden="true" />
+                          </em>
+                        )}
                       </span>
                       <span className="board-slot-value">{value}</span>
                       <span className="board-slot-rail" />

@@ -13,7 +13,10 @@ declare global {
     | "viewportChanged"
     | "safeAreaChanged"
     | "contentSafeAreaChanged"
-    | "fullscreenChanged";
+    | "fullscreenChanged"
+    | "fullscreenFailed";
+
+  type TelegramWebAppEventHandler = (event?: { error?: string }) => void;
 
   interface Window {
     Telegram?: {
@@ -30,9 +33,9 @@ declare global {
         ready(): void;
         expand(): void;
         isVersionAtLeast?(version: string): boolean;
-        requestFullscreen?(): void;
-        onEvent?(eventType: TelegramWebAppEvent, eventHandler: () => void): void;
-        offEvent?(eventType: TelegramWebAppEvent, eventHandler: () => void): void;
+        requestFullscreen?(): void | Promise<void>;
+        onEvent?(eventType: TelegramWebAppEvent, eventHandler: TelegramWebAppEventHandler): void;
+        offEvent?(eventType: TelegramWebAppEvent, eventHandler: TelegramWebAppEventHandler): void;
         close(): void;
         setHeaderColor?(color: string): void;
         setBackgroundColor?(color: string): void;

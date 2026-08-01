@@ -26,6 +26,28 @@ import { presentDraft } from "./presenter.js";
 
 export const draftsRouter = new Hono<ApiEnvironment>();
 
+const serializableRetryLimit = 8;
+
+async function withSerializableRetry<T>(
+  operation: (transaction: Prisma.TransactionClient) => Promise<T>,
+): Promise<T> {
+  for (let attempt = 0; attempt < serializableRetryLimit; attempt += 1) {
+    try {
+      return await prisma.$transaction(operation, {
+        isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+      });
+    } catch (error) {
+      const isWriteConflict =
+        error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2034";
+      if (!isWriteConflict) throw error;
+      if (attempt === serializableRetryLimit - 1) {
+        throw new ApiError(409, "DRAFT_BUSY", "The ban phase is busy; try again");
+      }
+    }
+  }
+  throw new ApiError(409, "DRAFT_BUSY", "The ban phase is busy; try again");
+}
+
 const slugify = (value: string): string =>
   value
     .toLocaleLowerCase()
@@ -430,85 +452,85 @@ draftsRouter.post("/:draftId/bans", zValidator("json", pickSchema), async (conte
   const actor = context.get("actor");
   const input = context.req.valid("json");
   const draftId = context.req.param("draftId");
-  const existingEvent = await prisma.draftEvent.findUnique({ where: { idempotencyKey: input.idempotencyKey } });
-  if (!existingEvent) {
-    await prisma.$transaction(
-      async (transaction) => {
-        const draft = await transaction.draft.findFirst({
-          where: { OR: [{ id: draftId }, { slug: draftId }] },
-          include: {
-            players: { orderBy: { orderIndex: "asc" } },
-            options: true,
-          },
-        });
-        if (!draft) throw new ApiError(404, "DRAFT_NOT_FOUND", "Draft not found");
-        if (draft.status !== "BANNING") throw new ApiError(409, "INVALID_STATUS", "The draft is not in the ban phase");
-        if (draft.version !== input.version) throw new ApiError(409, "STALE_DRAFT", "The draft changed; refresh and try again");
-        const player = draft.players.find((candidate) => candidate.userId === actor.userId);
-        if (!player) throw new ApiError(403, "SEAT_REQUIRED", "Only seated players can ban");
-        if (draft.options.some((candidate) => candidate.bannedByPlayerId === player.id)) {
-          throw new ApiError(409, "ALREADY_BANNED", "You already locked your ban");
-        }
-        const option = draft.options.find((candidate) => candidate.id === input.optionId);
-        if (!option) throw new ApiError(404, "OPTION_NOT_FOUND", "Draft option not found");
-        if (option.kind !== "FACTION") throw new ApiError(409, "INVALID_OPTION", "Only factions can be banned");
-        if (option.bannedByPlayerId) throw new ApiError(409, "OPTION_BANNED", "That faction is already banned");
-        const banned = await transaction.draftOption.updateMany({
-          where: { id: option.id, bannedByPlayerId: null },
-          data: { bannedByPlayerId: player.id, bannedAt: new Date() },
-        });
-        if (banned.count !== 1) throw new ApiError(409, "OPTION_BANNED", "That faction was just banned");
-        const event = await transaction.draftEvent.create({
+  await withSerializableRetry(async (transaction) => {
+    const existingEvent = await transaction.draftEvent.findUnique({
+      where: { idempotencyKey: input.idempotencyKey },
+    });
+    if (!existingEvent) {
+      const draft = await transaction.draft.findFirst({
+        where: { OR: [{ id: draftId }, { slug: draftId }] },
+        include: {
+          players: { orderBy: { orderIndex: "asc" } },
+          options: true,
+        },
+      });
+      if (!draft) throw new ApiError(404, "DRAFT_NOT_FOUND", "Draft not found");
+      if (draft.status !== "BANNING") {
+        throw new ApiError(409, "INVALID_STATUS", "The draft is not in the ban phase");
+      }
+      if (input.version > draft.version) {
+        throw new ApiError(409, "STALE_DRAFT", "The draft changed; refresh and try again");
+      }
+      const player = draft.players.find((candidate) => candidate.userId === actor.userId);
+      if (!player) throw new ApiError(403, "SEAT_REQUIRED", "Only seated players can ban");
+      if (draft.options.some((candidate) => candidate.bannedByPlayerId === player.id)) {
+        throw new ApiError(409, "ALREADY_BANNED", "You already locked your ban");
+      }
+      const option = draft.options.find((candidate) => candidate.id === input.optionId);
+      if (!option) throw new ApiError(404, "OPTION_NOT_FOUND", "Draft option not found");
+      if (option.kind !== "FACTION") throw new ApiError(409, "INVALID_OPTION", "Only factions can be banned");
+      if (option.bannedByPlayerId) throw new ApiError(409, "OPTION_BANNED", "That faction is already banned");
+      const banned = await transaction.draftOption.updateMany({
+        where: { id: option.id, bannedByPlayerId: null },
+        data: { bannedByPlayerId: player.id, bannedAt: new Date() },
+      });
+      if (banned.count !== 1) throw new ApiError(409, "OPTION_BANNED", "That faction was just banned");
+      const event = await transaction.draftEvent.create({
+        data: {
+          draftId: draft.id,
+          type: "PLAYER_BANNED",
+          actorUserId: actor.userId,
+          playerId: player.id,
+          idempotencyKey: input.idempotencyKey,
+          payload: { optionId: option.id, optionKind: option.kind, optionKey: option.key, optionLabel: option.label },
+        },
+      });
+      const lockedCount = await transaction.draftOption.count({
+        where: { draftId: draft.id, bannedByPlayerId: { not: null } },
+      });
+      const allLocked = lockedCount === draft.players.length;
+      if (allLocked) {
+        await transaction.draftEvent.create({
           data: {
             draftId: draft.id,
-            type: "PLAYER_BANNED",
+            type: "BAN_PHASE_COMPLETED",
             actorUserId: actor.userId,
-            playerId: player.id,
-            idempotencyKey: input.idempotencyKey,
-            payload: { optionId: option.id, optionKind: option.kind, optionKey: option.key, optionLabel: option.label },
+            payload: { bannedCount: lockedCount },
           },
         });
-        const lockedPlayerIds = new Set(
-          draft.options
-            .filter((candidate) => candidate.bannedByPlayerId)
-            .map((candidate) => candidate.bannedByPlayerId as string),
-        );
-        lockedPlayerIds.add(player.id);
-        const allLocked = lockedPlayerIds.size === draft.players.length;
-        if (allLocked) {
-          await transaction.draftEvent.create({
-            data: {
-              draftId: draft.id,
-              type: "BAN_PHASE_COMPLETED",
-              actorUserId: actor.userId,
-              payload: { bannedCount: lockedPlayerIds.size },
-            },
-          });
-        }
-        await transaction.draft.update({
-          where: { id: draft.id },
+      }
+      await transaction.draft.update({
+        where: { id: draft.id },
+        data: {
+          status: allLocked ? "DRAFTING" : "BANNING",
+          version: { increment: 1 },
+        },
+      });
+      if (draft.telegramChatId) {
+        const firstPlayer = draft.players[0]!;
+        await transaction.notificationOutbox.create({
           data: {
-            status: allLocked ? "DRAFTING" : "BANNING",
-            version: { increment: 1 },
+            draftId: draft.id,
+            eventId: event.id,
+            chatId: draft.telegramChatId,
+            message: allLocked
+              ? `🚫 ${player.displayName} banned ${option.label}. All bans are locked.\n${firstPlayer.displayName}, you are first to choose.`
+              : `🚫 ${player.displayName} banned ${option.label}. ${lockedCount}/${draft.players.length} bans locked.`,
           },
         });
-        if (draft.telegramChatId) {
-          const firstPlayer = draft.players[0]!;
-          await transaction.notificationOutbox.create({
-            data: {
-              draftId: draft.id,
-              eventId: event.id,
-              chatId: draft.telegramChatId,
-              message: allLocked
-                ? `🚫 ${player.displayName} banned ${option.label}. All bans are locked.\n${firstPlayer.displayName}, you are first to choose.`
-                : `🚫 ${player.displayName} banned ${option.label}. ${lockedPlayerIds.size}/${draft.players.length} bans locked.`,
-            },
-          });
-        }
-      },
-      { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
-    );
-  }
+      }
+    }
+  });
   return context.json(await presentDraft(draftId, actor.userId));
 });
 

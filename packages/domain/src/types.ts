@@ -89,7 +89,10 @@ export const draftConfigSchema = z.object({
   bansPerPlayer: z.number().int().min(0).max(1).default(0),
   sets: z
     .array(z.enum(["Base Game", "Prophecy of Kings"]))
-    .min(1)
+    .refine(
+      (sets) => sets.includes("Base Game") && sets.includes("Prophecy of Kings"),
+      "Base Game and Prophecy of Kings are both required in v1",
+    )
     .default(["Base Game", "Prophecy of Kings"]),
   balance: balanceConfigSchema.default({
     minimumLegendaryPlanets: 2,

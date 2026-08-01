@@ -1,4 +1,11 @@
 import { useMemo, useState } from "react";
+import {
+  ArrowRightIcon,
+  ChevronDownIcon,
+  ChevronLeftIcon,
+  ChevronRightIcon,
+  EllipsisIcon,
+} from "lucide-react";
 import { toast } from "sonner";
 import {
   createTurnOrder,
@@ -104,7 +111,7 @@ export function RoomTopbar({
   return (
     <header className="room-topbar">
       <button type="button" className="icon-btn" onClick={onBack} aria-label="Back to drafts">
-        ‹
+        <ChevronLeftIcon aria-hidden="true" />
       </button>
       <div className="room-topbar-title">
         <strong>{title}</strong>
@@ -117,7 +124,7 @@ export function RoomTopbar({
         aria-label="Manage draft"
         style={{ fontWeight: 600, fontSize: 12, letterSpacing: "0.06em" }}
       >
-        •••
+        <EllipsisIcon aria-hidden="true" />
       </button>
     </header>
   );
@@ -202,9 +209,7 @@ export function TurnStrip({
             </span>
           );
         })}
-        <span className="chevron" style={{ paddingLeft: 3, fontSize: 13 }}>
-          ›
-        </span>
+        <ChevronRightIcon className="chevron" style={{ marginLeft: 3 }} aria-hidden="true" />
       </button>
       {order.length === 0 ? null : null}
     </section>
@@ -308,9 +313,7 @@ export function TableView({
             <strong>Take your seat</strong>
             <small>Tap your name in the table below to claim it.</small>
           </span>
-          <span className="chevron" style={{ color: "var(--lime)" }}>
-            ›
-          </span>
+          <ChevronRightIcon className="chevron" style={{ color: "var(--lime)" }} aria-hidden="true" />
         </button>
       )}
 
@@ -319,7 +322,8 @@ export function TableView({
           THE TABLE · {claimed} OF {draft.players.length} CLAIMED
         </div>
         <button type="button" className="roster-link" onClick={() => void copyInvite(draft)}>
-          INVITE ›
+          INVITE
+          <ArrowRightIcon className="text-action-icon" aria-hidden="true" />
         </button>
       </div>
 
@@ -661,7 +665,7 @@ export function ManageSheet({
                     <strong>Copy invite link</strong>
                     <small>{draftLink(draft)}</small>
                   </span>
-                  <span className="chevron">›</span>
+                  <ChevronRightIcon className="chevron" aria-hidden="true" />
                 </button>
                 {draft.canManage && (
                   <button
@@ -681,7 +685,11 @@ export function ManageSheet({
                           : "Locked — the draft already started."}
                       </small>
                     </span>
-                    <span className="chevron">{removeMode ? "⌄" : "›"}</span>
+                    {removeMode ? (
+                      <ChevronDownIcon className="chevron" aria-hidden="true" />
+                    ) : (
+                      <ChevronRightIcon className="chevron" aria-hidden="true" />
+                    )}
                   </button>
                 )}
                 {removeMode &&
@@ -699,7 +707,7 @@ export function ManageSheet({
                         <strong>{player.displayName}</strong>
                         <small>{player.isClaimed ? "seat claimed" : "seat open"}</small>
                       </span>
-                      <span className="chevron">›</span>
+                      <ChevronRightIcon className="chevron" aria-hidden="true" />
                     </button>
                   ))}
               </div>
@@ -726,7 +734,7 @@ export function ManageSheet({
                           : "Locked — the draft already started."}
                       </small>
                     </span>
-                    <span className="chevron">›</span>
+                    <ChevronRightIcon className="chevron" aria-hidden="true" />
                   </button>
                   <button
                     type="button"
@@ -748,7 +756,7 @@ export function ManageSheet({
                             : `Waiting on seats · ${claimed}/${draft.players.length} claimed.`}
                       </small>
                     </span>
-                    <span className="chevron">›</span>
+                    <ChevronRightIcon className="chevron" aria-hidden="true" />
                   </button>
                 </div>
               </div>
@@ -769,7 +777,7 @@ export function ManageSheet({
                       <strong>Delete draft</strong>
                       <small>Removes the table and its history for everyone.</small>
                     </span>
-                    <span className="chevron">›</span>
+                    <ChevronRightIcon className="chevron" aria-hidden="true" />
                   </button>
                 </div>
               </div>

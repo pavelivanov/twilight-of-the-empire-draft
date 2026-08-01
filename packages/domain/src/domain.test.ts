@@ -81,6 +81,7 @@ describe("balanced generation", () => {
       playerCount: 6,
       sliceCount: 9 as const,
       factionCount: 12,
+      bansPerPlayer: 0,
       sets: ["Base Game", "Prophecy of Kings"] as Array<"Base Game" | "Prophecy of Kings">,
       balance: {
         minimumLegendaryPlanets: 2,
@@ -97,5 +98,14 @@ describe("balanced generation", () => {
     const factions = generateFactionPool("faction-test", config);
     expect(factions).toHaveLength(12);
     expect(new Set(factions.map((faction) => faction.id)).size).toBe(12);
+  });
+
+  it("rejects unsupported Base Game-only configurations", () => {
+    expect(() =>
+      draftConfigSchema.parse({
+        playerCount: 3,
+        sets: ["Base Game"],
+      }),
+    ).toThrow("Base Game and Prophecy of Kings are both required in v1");
   });
 });

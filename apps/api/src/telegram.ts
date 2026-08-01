@@ -90,14 +90,25 @@ telegramRouter.post("/webhook", async (context) => {
     }
   } else if (command?.startsWith("/status")) {
     const draft = await prisma.draft.findFirst({
-      where: { telegramChatId: String(message.chat.id), status: { in: ["SETUP", "DRAFTING", "COMPLETE"] } },
+      where: { telegramChatId: String(message.chat.id), status: { in: ["SETUP", "BANNING", "DRAFTING", "COMPLETE"] } },
       orderBy: { createdAt: "desc" },
-      include: { players: { orderBy: { orderIndex: "asc" } } },
+      include: {
+        players: { orderBy: { orderIndex: "asc" } },
+        options: {
+          where: { kind: "FACTION", bannedByPlayerId: { not: null } },
+          select: { id: true },
+        },
+      },
     });
+    const progress = draft
+      ? draft.status === "BANNING"
+        ? `${draft.options.length}/${draft.players.length} bans locked`
+        : `${draft.turnCursor}/${draft.players.length * 3} choices`
+      : "";
     await sendMessage(
       String(message.chat.id),
       draft
-        ? `${draft.title}: ${draft.status.toLowerCase()}, ${draft.turnCursor}/${draft.players.length * 3} choices.\n${miniAppLink(draft.slug)}`
+        ? `${draft.title}: ${draft.status.toLowerCase()}, ${progress}.\n${miniAppLink(draft.slug)}`
         : "This group is not connected to an active draft. Use /draft <draft-link-code>.",
     );
   }

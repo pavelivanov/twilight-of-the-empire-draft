@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { MinusIcon, PlusIcon } from "lucide-react";
 import { mapSeatLayouts, type PublicDraft, type Slice } from "@imperium/domain";
 
 import { selectedOptionOf } from "@/components/room-parts";
@@ -112,7 +113,7 @@ export function MapBoard({ draft }: { draft: PublicDraft }) {
             aria-label="Zoom out"
             onClick={() => setZoom((value) => Math.max(0.8, Math.round((value - 0.2) * 10) / 10))}
           >
-            −
+            <MinusIcon aria-hidden="true" />
           </button>
           <button
             type="button"
@@ -120,7 +121,7 @@ export function MapBoard({ draft }: { draft: PublicDraft }) {
             aria-label="Zoom in"
             onClick={() => setZoom((value) => Math.min(2, Math.round((value + 0.2) * 10) / 10))}
           >
-            +
+            <PlusIcon aria-hidden="true" />
           </button>
         </div>
       </div>

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
+import { ChevronRightIcon, PlusIcon } from "lucide-react";
 import { toast } from "sonner";
-import type { PublicDraft, PublicDraftSummary } from "@imperium/domain";
+import type { DraftStatus, PublicDraft, PublicDraftSummary } from "@imperium/domain";
 
 import { Brand } from "@/components/brand";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -19,6 +20,14 @@ function updatedLabel(updatedAt: string): string {
 
 function completedLabel(updatedAt: string): string {
   return new Intl.DateTimeFormat(undefined, { day: "numeric", month: "short" }).format(new Date(updatedAt));
+}
+
+export function isLiveDraftStatus(status: DraftStatus): boolean {
+  return status === "SETUP" || status === "BANNING" || status === "DRAFTING";
+}
+
+function isArchivedDraftStatus(status: DraftStatus): boolean {
+  return status === "COMPLETE" || status === "ARCHIVED";
 }
 
 function EmptyState({ onNew }: { onNew: () => void }) {
@@ -47,6 +56,7 @@ export function DraftsScreen({
   currentDraft,
   onOpen,
   onNew,
+  onReturnCurrent,
 }: {
   currentDraft?: PublicDraft;
   onOpen: (slug: string) => Promise<void>;
@@ -81,17 +91,24 @@ export function DraftsScreen({
     }
   }
 
-  const live = drafts?.filter((draft) => draft.status === "SETUP" || draft.status === "DRAFTING") ?? [];
-  const archive = drafts?.filter((draft) => draft.status === "COMPLETE" || draft.status === "ARCHIVED") ?? [];
+  const live = drafts?.filter((draft) => isLiveDraftStatus(draft.status)) ?? [];
+  const archive = drafts?.filter((draft) => isArchivedDraftStatus(draft.status)) ?? [];
 
   return (
     <main className="app-shell">
       <header className="list-topbar">
         <Brand />
-        <button type="button" className="btn-accent is-sm" onClick={onNew}>
-          <span style={{ fontSize: 14, lineHeight: 1 }}>+</span>
-          New draft
-        </button>
+        <div className="list-topbar-actions">
+          {currentDraft && (
+            <button type="button" className="btn-quiet is-sm" onClick={onReturnCurrent}>
+              Return to draft
+            </button>
+          )}
+          <button type="button" className="btn-accent is-sm" onClick={onNew}>
+            <PlusIcon aria-hidden="true" />
+            New draft
+          </button>
+        </div>
       </header>
 
       {drafts === undefined ? (
@@ -111,8 +128,9 @@ export function DraftsScreen({
               <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
                 {live.map((draft) => {
                   const isSetup = draft.status === "SETUP";
+                  const isBanning = draft.status === "BANNING";
                   const isCurrent = currentDraft?.slug === draft.slug;
-                  const color = isSetup ? "var(--blue)" : "var(--lime)";
+                  const color = isSetup ? "var(--blue)" : isBanning ? "var(--orange)" : "var(--lime)";
                   const percent = isSetup
                     ? (draft.claimedPlayerCount / Math.max(1, draft.playerCount)) * 100
                     : 100;
@@ -129,23 +147,21 @@ export function DraftsScreen({
                         <span style={{ flex: "1 1 auto", minWidth: 0, display: "block" }}>
                           <span className="live-card-status">
                             <i />
-                            <span>{isSetup ? "Gathering seats" : "Drafting live"}</span>
+                            <span>{isSetup ? "Gathering seats" : isBanning ? "Ban phase live" : "Drafting live"}</span>
                           </span>
                           <h3>{draft.title}</h3>
                           <span className="live-card-meta">
                             {draft.playerCount} players · {updatedLabel(draft.updatedAt)}
                           </span>
                         </span>
-                        <span className="chevron" style={{ paddingTop: 12 }}>
-                          ›
-                        </span>
+                        <ChevronRightIcon className="chevron" style={{ marginTop: 12 }} aria-hidden="true" />
                       </span>
                       <span className="live-card-progress">
                         <span className="progress-rail">
                           <span className="progress-fill" style={{ width: `${percent}%`, display: "block" }} />
                         </span>
                         <em>
-                          {draft.claimedPlayerCount}/{draft.playerCount} seats
+                          {isBanning ? "Bans in progress" : `${draft.claimedPlayerCount}/${draft.playerCount} seats`}
                         </em>
                       </span>
                     </button>
@@ -175,7 +191,7 @@ export function DraftsScreen({
                         completed {completedLabel(draft.updatedAt)} · {draft.playerCount} players
                       </small>
                     </span>
-                    <span className="chevron">›</span>
+                    <ChevronRightIcon className="chevron" aria-hidden="true" />
                   </button>
                 ))}
               </div>

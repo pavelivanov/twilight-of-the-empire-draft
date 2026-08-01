@@ -174,20 +174,27 @@ describe.sequential("ban phase", () => {
     if (!banDraft) throw new Error("Ban draft was not created");
     const creatorSeatId = banDraft.players.find((player) => player.isCurrentUser)!.id;
     const seats = banDraft.players.map((player) => ({ id: player.id, name: player.displayName }));
+    const factions = banDraft.options.filter((candidate) => candidate.kind === "FACTION").slice(0, seats.length);
+    const observedVersion = banDraft.version;
 
-    for (const seat of seats) {
-      const faction = banDraft.options.find(
-        (candidate) => candidate.kind === "FACTION" && !candidate.bannedByPlayerId,
-      )!;
-      const identity = seat.id === creatorSeatId ? creatorIdentity : `ban-${seat.id}`;
-      banDraft = await responseDraft(
-        await app.request(`/api/drafts/${banDraft.slug}/bans`, {
+    const responses = await Promise.all(
+      seats.map((seat, index) => {
+        const identity = seat.id === creatorSeatId ? creatorIdentity : `ban-${seat.id}`;
+        return app.request(`/api/drafts/${banDraft!.slug}/bans`, {
           method: "POST",
           headers: jsonHeaders(identity, seat.name),
-          body: JSON.stringify({ optionId: faction.id, version: banDraft.version, idempotencyKey: crypto.randomUUID() }),
-        }),
-      );
-    }
+          body: JSON.stringify({
+            optionId: factions[index]!.id,
+            version: observedVersion,
+            idempotencyKey: crypto.randomUUID(),
+          }),
+        });
+      }),
+    );
+    await Promise.all(responses.map((response) => responseDraft(response)));
+    banDraft = await responseDraft(
+      await app.request(`/api/drafts/${banDraft.slug}`, { headers: jsonHeaders(creatorIdentity, "Alice") }),
+    );
 
     expect(banDraft.status).toBe("DRAFTING");
     expect(banDraft.activePlayerId).toBe(banDraft.players[0]!.id);

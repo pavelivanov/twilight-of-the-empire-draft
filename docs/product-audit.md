@@ -64,11 +64,10 @@ validation and are deliberately outside v1.
 ## Draft lifecycle
 
 ```text
-SETUP ── start ──> DRAFTING ── final pick ──> COMPLETE ──> ARCHIVED
-  │                    │
-  ├── configure table  ├── pick
-  ├── claim identities └── group notifications
-  └── regenerate
+SETUP ─┬─ start with bans ──> BANNING ── all bans locked ──> DRAFTING
+       └─ start without bans ──────────────────────────────────────────┘
+
+DRAFTING ── final pick ──> COMPLETE ──> ARCHIVED
 ```
 
 Player and rules choices begin in the creation form. Once the draft row is
@@ -99,6 +98,12 @@ A pick is accepted only when:
 The option claim, current turn, draft version, event, and notification outbox row
 are committed atomically. Duplicate requests return the already-accepted result
 or a conflict; they never advance twice.
+
+When bans are enabled, every seated player may lock exactly one distinct faction.
+Ban submissions are simultaneous: clients may submit the version observed at the
+start of the ban phase, while serializable transactions and a database uniqueness
+constraint prevent duplicate player bans. The final lock atomically advances the
+draft to `DRAFTING`.
 
 ## Balanced slice generation
 
