@@ -1,4 +1,4 @@
-import { StrictMode, useCallback, useEffect, useState } from "react";
+import { StrictMode, useCallback, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { Toaster } from "@/components/ui/sonner";
 import type { PublicDraft } from "@imperium/domain";
@@ -24,11 +24,15 @@ function App() {
     initialDraftId ? "draft" : "drafts",
   );
   const [draftView, setDraftView] = useState<DraftView>("draft");
+  const draftStatus = useRef<PublicDraft["status"] | undefined>(undefined);
 
   const acceptDraft = useCallback((nextDraft: PublicDraft, resetView = false) => {
+    const previousStatus = draftStatus.current;
+    draftStatus.current = nextDraft.status;
     setDraft(nextDraft);
     setScreen("draft");
     if (resetView) setDraftView(nextDraft.status === "SETUP" ? "table" : "draft");
+    else if (previousStatus === "SETUP" && nextDraft.status !== "SETUP") setDraftView("draft");
     localStorage.setItem("imperium-last-draft", nextDraft.slug);
     const url = new URL(window.location.href);
     url.searchParams.set("draft", nextDraft.slug);
@@ -59,7 +63,7 @@ function App() {
   useEffect(() => {
     if (screen !== "draft" || !draft || draft.status === "COMPLETE") return;
     const timer = window.setInterval(() => {
-      api.getDraft(draft.slug).then(setDraft).catch(() => undefined);
+      api.getDraft(draft.slug).then(acceptDraft).catch(() => undefined);
     }, 5_000);
     return () => window.clearInterval(timer);
   }, [acceptDraft, draft, screen]);

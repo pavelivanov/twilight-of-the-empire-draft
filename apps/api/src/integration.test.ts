@@ -22,14 +22,14 @@ async function responseDraft(response: Response): Promise<PublicDraft> {
 }
 
 describe.sequential("draft lifecycle", () => {
-  it("creates a deterministic setup draft", async () => {
+  it("creates a deterministic live draft immediately", async () => {
     const response = await app.request("/api/drafts", {
       method: "POST",
       headers: jsonHeaders(creatorIdentity, "Alice"),
       body: JSON.stringify({
         title: `Lifecycle ${runId}`,
         players: ["Alice", "Bob", "Cara", "Dan", "Eve", "Finn"].map((displayName) => ({ displayName })),
-        seed: `lifecycle-${runId}`,
+        seed: "integration-lifecycle",
         config: {
           playerCount: 6,
           sliceCount: 9,
@@ -51,12 +51,93 @@ describe.sequential("draft lifecycle", () => {
     });
     draft = await responseDraft(response);
     creatorPlayerId = draft.players.find((player) => player.isCurrentUser)!.id;
-    expect(draft.status).toBe("SETUP");
+    expect(draft.status).toBe("DRAFTING");
     expect(draft.players).toHaveLength(6);
+    expect(draft.players.filter((player) => player.isClaimed)).toHaveLength(1);
     expect(draft.options.filter((option) => option.kind === "SLICE")).toHaveLength(9);
+    expect(draft.events).toContainEqual(
+      expect.objectContaining({
+        type: "DRAFT_STARTED",
+        payload: expect.objectContaining({ automatic: true }),
+      }),
+    );
   });
 
-  it("claims all five invited player identities", async () => {
+  it("lets the creator select for another player and undo that selection", async () => {
+    if (!draft) throw new Error("Draft was not created");
+    if (draft.activePlayerId === creatorPlayerId) {
+      const creator = draft.players.find((player) => player.id === creatorPlayerId)!;
+      const option = draft.options.find(
+        (candidate) => candidate.kind === "SLICE" && !candidate.selectedByPlayerId,
+      )!;
+      draft = await responseDraft(
+        await app.request(`/api/drafts/${draft.slug}/picks`, {
+          method: "POST",
+          headers: jsonHeaders(creatorIdentity, creator.displayName),
+          body: JSON.stringify({
+            optionId: option.id,
+            version: draft.version,
+            idempotencyKey: crypto.randomUUID(),
+          }),
+        }),
+      );
+    }
+
+    const turnIndex = draft.turnCursor;
+    const activePlayerId = draft.activePlayerId!;
+    const active = draft.players.find((player) => player.id === activePlayerId)!;
+    expect(active.id).not.toBe(creatorPlayerId);
+    const option = draft.options.find(
+      (candidate) => candidate.kind === "FACTION" && !candidate.selectedByPlayerId,
+    )!;
+    draft = await responseDraft(
+      await app.request(`/api/drafts/${draft.slug}/picks`, {
+        method: "POST",
+        headers: jsonHeaders(creatorIdentity, "Alice"),
+        body: JSON.stringify({
+          optionId: option.id,
+          version: draft.version,
+          idempotencyKey: crypto.randomUUID(),
+        }),
+      }),
+    );
+
+    expect(draft.options.find((candidate) => candidate.id === option.id)?.selectedByPlayerId).toBe(active.id);
+    expect(draft.events).toContainEqual(
+      expect.objectContaining({
+        type: "OPTION_SELECTED",
+        playerId: active.id,
+        payload: expect.objectContaining({ turnIndex, performedByCreator: true }),
+      }),
+    );
+
+    const rejectedUndo = await app.request(`/api/drafts/${draft.slug}/picks/undo`, {
+      method: "POST",
+      headers: jsonHeaders(active.id, active.displayName),
+      body: JSON.stringify({ version: draft.version }),
+    });
+    expect(rejectedUndo.status).toBe(403);
+
+    draft = await responseDraft(
+      await app.request(`/api/drafts/${draft.slug}/picks/undo`, {
+        method: "POST",
+        headers: jsonHeaders(creatorIdentity, "Alice"),
+        body: JSON.stringify({ version: draft.version }),
+      }),
+    );
+    expect(draft.turnCursor).toBe(turnIndex);
+    expect(draft.activePlayerId).toBe(active.id);
+    expect(draft.options.find((candidate) => candidate.id === option.id)?.selectedByPlayerId).toBeNull();
+    expect(draft.events).toContainEqual(
+      expect.objectContaining({
+        type: "PICK_REVERTED",
+        playerId: active.id,
+        payload: expect.objectContaining({ optionId: option.id, turnIndex }),
+      }),
+    );
+  });
+
+  it("lets all invited players claim seats after selections are live", async () => {
     if (!draft) throw new Error("Draft was not created");
     for (const player of draft.players.filter((candidate) => !candidate.isClaimed)) {
       const response = await app.request(`/api/drafts/${draft.slug}/players/${player.id}/claim`, {
@@ -67,18 +148,11 @@ describe.sequential("draft lifecycle", () => {
       draft = await responseDraft(response);
     }
     expect(draft.players.every((player) => player.isClaimed)).toBe(true);
+    expect(draft.status).toBe("DRAFTING");
   });
 
-  it("starts and atomically accepts all eighteen picks", async () => {
+  it("atomically accepts all remaining picks", async () => {
     if (!draft) throw new Error("Draft was not created");
-    draft = await responseDraft(
-      await app.request(`/api/drafts/${draft.slug}/start`, {
-        method: "POST",
-        headers: jsonHeaders(creatorIdentity, "Alice"),
-        body: JSON.stringify({ version: draft.version }),
-      }),
-    );
-    expect(draft.status).toBe("DRAFTING");
 
     while (draft.status === "DRAFTING") {
       const activePlayerId = draft.activePlayerId;
@@ -104,7 +178,42 @@ describe.sequential("draft lifecycle", () => {
     expect(draft.status).toBe("COMPLETE");
     expect(draft.turnCursor).toBe(18);
     expect(draft.players.every((player) => Object.keys(player.picks).length === 3)).toBe(true);
-    expect(draft.events.filter((event) => event.type === "OPTION_SELECTED")).toHaveLength(18);
+    expect(draft.events.filter((event) => event.type === "OPTION_SELECTED")).toHaveLength(19);
+    expect(draft.events.filter((event) => event.type === "PICK_REVERTED")).toHaveLength(1);
+  });
+
+  it("reopens a completed draft when the creator undoes the final selection", async () => {
+    if (!draft) throw new Error("Draft was not created");
+    const finalTurnIndex = draft.totalTurns - 1;
+    const finalPick = draft.events.find(
+      (event) => event.type === "OPTION_SELECTED" && event.payload.turnIndex === finalTurnIndex,
+    );
+    const option = draft.options.find((candidate) => candidate.id === finalPick?.payload.optionId)!;
+
+    draft = await responseDraft(
+      await app.request(`/api/drafts/${draft.slug}/picks/undo`, {
+        method: "POST",
+        headers: jsonHeaders(creatorIdentity, "Alice"),
+        body: JSON.stringify({ version: draft.version }),
+      }),
+    );
+    expect(draft.status).toBe("DRAFTING");
+    expect(draft.turnCursor).toBe(finalTurnIndex);
+    expect(draft.options.find((candidate) => candidate.id === option.id)?.selectedByPlayerId).toBeNull();
+
+    draft = await responseDraft(
+      await app.request(`/api/drafts/${draft.slug}/picks`, {
+        method: "POST",
+        headers: jsonHeaders(creatorIdentity, "Alice"),
+        body: JSON.stringify({
+          optionId: option.id,
+          version: draft.version,
+          idempotencyKey: crypto.randomUUID(),
+        }),
+      }),
+    );
+    expect(draft.status).toBe("COMPLETE");
+    expect(draft.turnCursor).toBe(draft.totalTurns);
   });
 });
 
@@ -125,38 +234,28 @@ describe.sequential("ban phase", () => {
     expect(response.status).toBe(400);
   });
 
-  it("creates a draft with bans enabled and enters BANNING on start", async () => {
+  it("creates a draft directly in BANNING before invitees claim seats", async () => {
     const response = await app.request("/api/drafts", {
       method: "POST",
       headers: jsonHeaders(creatorIdentity, "Alice"),
       body: JSON.stringify({
         title: `Ban lifecycle ${runId}`,
         players: ["Alice", "Bob", "Cara"].map((displayName) => ({ displayName })),
-        seed: `ban-${runId}`,
+        seed: "integration-ban",
         config: { playerCount: 3, factionCount: 9, bansPerPlayer: 1 },
       }),
     });
     banDraft = await responseDraft(response);
     expect(banDraft.config.bansPerPlayer).toBe(1);
-
-    for (const player of banDraft.players.filter((candidate) => !candidate.isClaimed)) {
-      banDraft = await responseDraft(
-        await app.request(`/api/drafts/${banDraft.slug}/players/${player.id}/claim`, {
-          method: "POST",
-          headers: jsonHeaders(`ban-${player.id}`, player.displayName),
-          body: JSON.stringify({ version: banDraft.version }),
-        }),
-      );
-    }
-    banDraft = await responseDraft(
-      await app.request(`/api/drafts/${banDraft.slug}/start`, {
-        method: "POST",
-        headers: jsonHeaders(creatorIdentity, "Alice"),
-        body: JSON.stringify({ version: banDraft.version }),
+    expect(banDraft.status).toBe("BANNING");
+    expect(banDraft.players.filter((player) => player.isClaimed)).toHaveLength(1);
+    expect(banDraft.activePlayerId).toBeNull();
+    expect(banDraft.events).toContainEqual(
+      expect.objectContaining({
+        type: "DRAFT_STARTED",
+        payload: expect.objectContaining({ automatic: true, banPhase: true }),
       }),
     );
-    expect(banDraft.status).toBe("BANNING");
-    expect(banDraft.activePlayerId).toBeNull();
   });
 
   it("rejects picks during the ban phase", async () => {
@@ -170,37 +269,54 @@ describe.sequential("ban phase", () => {
     expect(response.status).toBe(409);
   });
 
-  it("locks one ban per player and flips to DRAFTING when all lock", async () => {
+  it("lets the creator lock bans for unclaimed players and enter DRAFTING", async () => {
     if (!banDraft) throw new Error("Ban draft was not created");
-    const creatorSeatId = banDraft.players.find((player) => player.isCurrentUser)!.id;
     const seats = banDraft.players.map((player) => ({ id: player.id, name: player.displayName }));
     const factions = banDraft.options.filter((candidate) => candidate.kind === "FACTION").slice(0, seats.length);
-    const observedVersion = banDraft.version;
 
-    const responses = await Promise.all(
-      seats.map((seat, index) => {
-        const identity = seat.id === creatorSeatId ? creatorIdentity : `ban-${seat.id}`;
-        return app.request(`/api/drafts/${banDraft!.slug}/bans`, {
+    for (const [index, seat] of seats.entries()) {
+      banDraft = await responseDraft(
+        await app.request(`/api/drafts/${banDraft.slug}/bans`, {
           method: "POST",
-          headers: jsonHeaders(identity, seat.name),
+          headers: jsonHeaders(creatorIdentity, "Alice"),
           body: JSON.stringify({
             optionId: factions[index]!.id,
-            version: observedVersion,
+            playerId: seat.id,
+            version: banDraft.version,
             idempotencyKey: crypto.randomUUID(),
           }),
-        });
-      }),
-    );
-    await Promise.all(responses.map((response) => responseDraft(response)));
-    banDraft = await responseDraft(
-      await app.request(`/api/drafts/${banDraft.slug}`, { headers: jsonHeaders(creatorIdentity, "Alice") }),
-    );
+        }),
+      );
+    }
 
     expect(banDraft.status).toBe("DRAFTING");
     expect(banDraft.activePlayerId).toBe(banDraft.players[0]!.id);
     expect(banDraft.options.filter((option) => option.bannedByPlayerId)).toHaveLength(3);
     expect(banDraft.events.filter((event) => event.type === "PLAYER_BANNED")).toHaveLength(3);
+    expect(
+      banDraft.events.filter(
+        (event) => event.type === "PLAYER_BANNED" && event.payload.performedByCreator === true,
+      ),
+    ).toHaveLength(2);
     expect(banDraft.events.some((event) => event.type === "BAN_PHASE_COMPLETED")).toBe(true);
+  });
+
+  it("lets invitees claim their seats after the ban phase", async () => {
+    if (!banDraft) throw new Error("Ban draft was not created");
+    for (const player of banDraft.players.filter((candidate) => !candidate.isClaimed)) {
+      banDraft = await responseDraft(
+        await app.request(`/api/drafts/${banDraft.slug}/players/${player.id}/claim`, {
+          method: "POST",
+          headers: jsonHeaders(`ban-${player.id}`, player.displayName),
+          body: JSON.stringify({ version: banDraft.version }),
+        }),
+      );
+    }
+    banDraft = await responseDraft(
+      await app.request(`/api/drafts/${banDraft.slug}`, { headers: jsonHeaders(creatorIdentity, "Alice") }),
+    );
+    expect(banDraft.players.every((player) => player.isClaimed)).toBe(true);
+    expect(banDraft.status).toBe("DRAFTING");
   });
 
   it("rejects a second ban and picks of banned factions", async () => {
@@ -241,7 +357,7 @@ describe.sequential("draft management", () => {
       body: JSON.stringify({
         title: `Managed ${runId}`,
         players: ["Alice", "Bob", "Cara", "Dan"].map((displayName) => ({ displayName })),
-        seed: `managed-${runId}`,
+        seed: "integration-managed",
         config: {
           playerCount: 4,
           sliceCount: 9,
@@ -308,7 +424,7 @@ describe.sequential("draft management", () => {
     );
   });
 
-  it("removes a claimed player before start and reduces the position pool", async () => {
+  it("removes a claimed player before the first selection and reduces the position pool", async () => {
     if (!managedDraft) throw new Error("Managed draft was not created");
     const leavingPlayer = managedDraft.players.find((player) => !player.isClaimed)!;
     managedDraft = await responseDraft(
@@ -336,7 +452,7 @@ describe.sequential("draft management", () => {
     );
   });
 
-  it("starts once all three remaining seats are claimed", async () => {
+  it("keeps drafting live while all three remaining seats are claimed", async () => {
     if (!managedDraft) throw new Error("Managed draft was not created");
     for (const player of managedDraft.players.filter((candidate) => !candidate.isClaimed)) {
       managedDraft = await responseDraft(
@@ -347,14 +463,6 @@ describe.sequential("draft management", () => {
         }),
       );
     }
-    managedDraft = await responseDraft(
-      await app.request(`/api/drafts/${managedDraft.slug}/start`, {
-        method: "POST",
-        headers: jsonHeaders(creatorIdentity, "Alice"),
-        body: JSON.stringify({ version: managedDraft.version }),
-      }),
-    );
-
     expect(managedDraft.status).toBe("DRAFTING");
     expect(managedDraft.totalTurns).toBe(9);
   });

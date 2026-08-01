@@ -142,36 +142,42 @@ export function TurnStrip({
   const activePlayer = draft.players.find((player) => player.id === draft.activePlayerId);
   const currentPlayer = draft.players.find((player) => player.isCurrentUser);
   const isMyTurn = Boolean(currentPlayer && activePlayer && currentPlayer.id === activePlayer.id);
+  const isManagingTurn = Boolean(draft.canManage && activePlayer && !isMyTurn);
+  const turnPlayer = isManagingTurn ? activePlayer : currentPlayer;
 
   const need: string[] = [];
-  if (currentPlayer) {
-    if (!selectedOptionOf(draft, currentPlayer.id, "SLICE")) need.push("slice");
-    if (!selectedOptionOf(draft, currentPlayer.id, "FACTION")) need.push("faction");
-    if (!selectedOptionOf(draft, currentPlayer.id, "POSITION")) need.push("seat");
+  if (turnPlayer) {
+    if (!selectedOptionOf(draft, turnPlayer.id, "SLICE")) need.push("slice");
+    if (!selectedOptionOf(draft, turnPlayer.id, "FACTION")) need.push("faction");
+    if (!selectedOptionOf(draft, turnPlayer.id, "POSITION")) need.push("seat");
   }
 
   const kicker = done
     ? "DRAFT COMPLETE"
     : isMyTurn
       ? "YOUR TURN"
-      : activePlayer
-        ? `WAITING ON ${activePlayer.displayName.toUpperCase()}`
-        : "WAITING";
+      : isManagingTurn
+        ? `OWNER PICK · FOR ${activePlayer?.displayName.toUpperCase()}`
+        : activePlayer
+          ? `WAITING ON ${activePlayer.displayName.toUpperCase()}`
+          : "WAITING";
   const sub = done
     ? "Every seat is filled — open the map."
     : isMyTurn
       ? need.length === 1
         ? `Last one to take: ${need[0]}`
         : `Take one: ${need.join(" · ")}`
-      : activePlayer
-        ? `${activePlayer.displayName} is choosing. ${
-            currentPlayer
-              ? need.length
-                ? `You still need ${need.join(" · ")}.`
-                : "Your board is complete."
-              : "Watch the pool move in real time."
-          }`
-        : "Waiting for the next pick.";
+      : isManagingTurn
+        ? `Choose for ${activePlayer?.displayName}: ${need.join(" · ")}`
+        : activePlayer
+          ? `${activePlayer.displayName} is choosing. ${
+              currentPlayer
+                ? need.length
+                  ? `You still need ${need.join(" · ")}.`
+                  : "Your board is complete."
+                : "Watch the pool move in real time."
+            }`
+          : "Waiting for the next pick.";
 
   const picksByPlayer = new Map<string, number>();
   for (const option of draft.options) {
@@ -181,7 +187,7 @@ export function TurnStrip({
   }
 
   return (
-    <section className={cn("turn-strip", isMyTurn && !done && "is-mine", done && "is-done")}>
+    <section className={cn("turn-strip", (isMyTurn || isManagingTurn) && !done && "is-mine", done && "is-done")}>
       <div className="turn-strip-row">
         <div style={{ display: "flex", alignItems: "center", gap: 9, minWidth: 0 }}>
           <i className="turn-dot" aria-hidden="true" />
@@ -232,7 +238,12 @@ export function TableView({
   const [pending, setPending] = useState<{ kind: "claim" | "release"; player: PublicPlayer }>();
   const currentPlayer = draft.players.find((player) => player.isCurrentUser);
   const claimed = draft.players.filter((player) => player.isClaimed).length;
-  const canClaim = draft.status === "SETUP";
+  const canClaim = draft.status !== "ARCHIVED";
+  const canRelease =
+    draft.turnCursor === 0 &&
+    draft.status !== "COMPLETE" &&
+    draft.status !== "ARCHIVED" &&
+    draft.options.every((option) => !option.selectedByPlayerId && !option.bannedByPlayerId);
 
   const mySlice = currentPlayer ? selectedOptionOf(draft, currentPlayer.id, "SLICE") : undefined;
   const myFaction = currentPlayer ? selectedOptionOf(draft, currentPlayer.id, "FACTION") : undefined;
@@ -287,7 +298,7 @@ export function TableView({
               </span>
             ))}
           </div>
-          {canClaim && (
+          {canRelease && (
             <button
               type="button"
               className="identity-leave"
@@ -304,7 +315,7 @@ export function TableView({
           className="seat-claim-dock"
           onClick={() => {
             const firstOpen = draft.players.find((player) => !player.isClaimed);
-            if (!canClaim) toast.error("The draft already started — seats are locked.");
+            if (!canClaim) toast.error("This draft is archived — seats are locked.");
             else if (!firstOpen) toast.error("Every seat is taken.");
             else toast.info("Tap your name below to claim that seat.");
           }}
@@ -354,11 +365,13 @@ export function TableView({
                   <span className={cn("tag-chip", tag.className)}>{tag.label}</span>
                 </span>
                 <span className="roster-picks" style={{ display: "block" }}>
-                  {draft.status === "SETUP"
-                    ? player.isClaimed
+                  {player.isClaimed
+                    ? draft.status === "SETUP"
                       ? "seat claimed"
-                      : "tap to claim this seat"
-                    : picksLine(draft, player)}
+                      : picksLine(draft, player)
+                    : draft.status === "ARCHIVED"
+                      ? "seat was not claimed"
+                      : `tap to claim this seat · ${picksLine(draft, player)}`}
                 </span>
               </span>
             </button>
@@ -540,9 +553,26 @@ export function OrderSheet({
   const order = useTurnOrder(draft);
   const playerCount = draft.players.length;
   const players = new Map(draft.players.map((player) => [player.id, player]));
-  const pickEvents = [...draft.events]
-    .filter((event) => event.type === "OPTION_SELECTED")
-    .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+  const selectedOptionIds = new Set(
+    draft.options.filter((option) => option.selectedByPlayerId).map((option) => option.id),
+  );
+  const pickEventsByTurn = new Map<number, PublicDraft["events"][number]>();
+  let fallbackTurnIndex = 0;
+  for (const event of [...draft.events]
+    .filter(
+      (candidate) =>
+        candidate.type === "OPTION_SELECTED" &&
+        selectedOptionIds.has(String(candidate.payload.optionId ?? "")),
+    )
+    .sort((left, right) => left.createdAt.localeCompare(right.createdAt))) {
+    const storedTurnIndex = event.payload.turnIndex;
+    const turnIndex =
+      typeof storedTurnIndex === "number" && Number.isInteger(storedTurnIndex)
+        ? storedTurnIndex
+        : fallbackTurnIndex;
+    pickEventsByTurn.set(turnIndex, event);
+    fallbackTurnIndex = Math.max(fallbackTurnIndex, turnIndex + 1);
+  }
 
   return (
     <Drawer open={open} onOpenChange={onOpenChange} showSwipeHandle>
@@ -559,7 +589,7 @@ export function OrderSheet({
                 const globalIndex = round * playerCount + index;
                 const isCurrent = draft.status === "DRAFTING" && globalIndex === draft.turnCursor;
                 const isPast = globalIndex < draft.turnCursor;
-                const event = pickEvents[globalIndex];
+                const event = pickEventsByTurn.get(globalIndex);
                 return (
                   <div
                     key={globalIndex}
@@ -600,11 +630,14 @@ export function ManageSheet({
   onDeleted: () => void;
 }) {
   const [busy, setBusy] = useState(false);
-  const [confirming, setConfirming] = useState<"delete" | { removePlayerId: string }>();
+  const [confirming, setConfirming] = useState<"delete" | "undo" | { removePlayerId: string }>();
   const [removeMode, setRemoveMode] = useState(false);
-  const isSetup = draft.status === "SETUP";
-  const claimed = draft.players.filter((player) => player.isClaimed).length;
-  const allClaimed = claimed === draft.players.length;
+  const canEditDraft =
+    draft.turnCursor === 0 &&
+    draft.status !== "COMPLETE" &&
+    draft.status !== "ARCHIVED" &&
+    draft.options.every((option) => !option.selectedByPlayerId && !option.bannedByPlayerId);
+  const canUndo = draft.turnCursor > 0 && (draft.status === "DRAFTING" || draft.status === "COMPLETE");
 
   async function run(action: () => Promise<PublicDraft>, success: string) {
     setBusy(true);
@@ -671,18 +704,18 @@ export function ManageSheet({
                   <button
                     type="button"
                     className="manage-row"
-                    disabled={!isSetup || draft.players.length <= 3 || busy}
+                    disabled={!canEditDraft || draft.players.length <= 3 || busy}
                     onClick={() => setRemoveMode((value) => !value)}
                   >
                     <i />
                     <span className="manage-row-main">
                       <strong>Remove a player</strong>
                       <small>
-                        {isSetup
+                        {canEditDraft
                           ? draft.players.length > 3
-                            ? "Their seat is removed and the order closes around it."
+                            ? "Available until the first selection is locked."
                             : "A table needs at least three seats."
-                          : "Locked — the draft already started."}
+                          : "Locked — selections have already started."}
                       </small>
                     </span>
                     {removeMode ? (
@@ -693,7 +726,7 @@ export function ManageSheet({
                   </button>
                 )}
                 {removeMode &&
-                  isSetup &&
+                  canEditDraft &&
                   removablePlayers.map((player) => (
                     <button
                       key={player.id}
@@ -720,7 +753,7 @@ export function ManageSheet({
                   <button
                     type="button"
                     className="manage-row is-warn"
-                    disabled={!isSetup || busy}
+                    disabled={!canEditDraft || busy}
                     onClick={() =>
                       void run(() => api.regenerate(draft.slug, draft.version), "New balanced pool generated.")
                     }
@@ -729,31 +762,26 @@ export function ManageSheet({
                     <span className="manage-row-main">
                       <strong>Regenerate pool</strong>
                       <small>
-                        {isSetup
-                          ? "Reroll all nine slices before the draft starts."
-                          : "Locked — the draft already started."}
+                        {canEditDraft
+                          ? "Reroll all nine slices before the first selection."
+                          : "Locked — selections have already started."}
                       </small>
                     </span>
                     <ChevronRightIcon className="chevron" aria-hidden="true" />
                   </button>
                   <button
                     type="button"
-                    className="manage-row is-hot"
-                    disabled={!isSetup || !allClaimed || busy}
-                    onClick={() => {
-                      onOpenChange(false);
-                      void run(() => api.startDraft(draft.slug, draft.version), "Draft started.");
-                    }}
+                    className="manage-row is-warn"
+                    disabled={!canUndo || busy}
+                    onClick={() => setConfirming("undo")}
                   >
                     <i />
                     <span className="manage-row-main">
-                      <strong>Start draft</strong>
+                      <strong>Undo last selection</strong>
                       <small>
-                        {!isSetup
-                          ? "Already running."
-                          : allClaimed
-                            ? "Freeze the pool and open the first pick."
-                            : `Waiting on seats · ${claimed}/${draft.players.length} claimed.`}
+                        {canUndo
+                          ? "Return the option to the pool and reopen that player's turn."
+                          : "Available after the first selection."}
                       </small>
                     </span>
                     <ChevronRightIcon className="chevron" aria-hidden="true" />
@@ -799,11 +827,17 @@ export function ManageSheet({
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>
-              {confirming === "delete" ? `Delete “${draft.title}”?` : `Remove ${pendingRemovePlayer?.displayName}?`}
+              {confirming === "delete"
+                ? `Delete “${draft.title}”?`
+                : confirming === "undo"
+                  ? "Undo the last selection?"
+                  : `Remove ${pendingRemovePlayer?.displayName}?`}
             </AlertDialogTitle>
             <AlertDialogDescription>
               {confirming === "delete"
                 ? "This permanently removes the players, the generated pool, all picks and the history."
+                : confirming === "undo"
+                  ? "The option returns to the pool and the same player gets the turn again. The action stays visible in Activity."
                 : pendingRemovePlayer?.isClaimed
                   ? "Their claimed seat and access are removed from the draft."
                   : "Their open seat is removed and the draft order closes around it."}
@@ -812,11 +846,16 @@ export function ManageSheet({
           <AlertDialogFooter>
             <AlertDialogCancel disabled={busy}>Cancel</AlertDialogCancel>
             <AlertDialogAction
-              variant="destructive"
+              variant={confirming === "undo" ? "default" : "destructive"}
               disabled={busy}
               onClick={() => {
                 if (confirming === "delete") void deleteDraft();
-                else if (pendingRemovePlayer) {
+                else if (confirming === "undo") {
+                  void run(
+                    () => api.undoLastPick(draft.slug, draft.version),
+                    "Last selection undone.",
+                  ).then(() => setConfirming(undefined));
+                } else if (pendingRemovePlayer) {
                   void run(
                     () => api.removePlayer(draft.slug, pendingRemovePlayer.id, draft.version),
                     `${pendingRemovePlayer.displayName} removed from the table.`,
@@ -824,7 +863,7 @@ export function ManageSheet({
                 }
               }}
             >
-              {confirming === "delete" ? "Delete draft" : "Remove player"}
+              {confirming === "delete" ? "Delete draft" : confirming === "undo" ? "Undo selection" : "Remove player"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

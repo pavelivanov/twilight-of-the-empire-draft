@@ -370,22 +370,21 @@
   }
 
   .room-shell {
-    position: fixed;
-    inset: 0;
     display: flex;
     flex-direction: column;
-    height: 100dvh;
+    height: calc(100dvh - var(--app-content-inset-top) - var(--app-content-inset-bottom));
     width: 100%;
     max-width: 560px;
     margin: 0 auto;
-    padding-top: var(--app-content-inset-top);
-    padding-bottom: var(--app-content-inset-bottom);
     overflow: hidden;
   }
 
   .room-body {
     flex: 1 1 auto;
+    min-height: 0;
     overflow-y: auto;
+    overscroll-behavior-y: contain;
+    touch-action: pan-y;
     position: relative;
     animation: fadein 0.2s ease;
   }

@@ -98,9 +98,14 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ optionId, version, idempotencyKey: crypto.randomUUID() }),
     }),
-  ban: (draftId: string, optionId: string, version: number) =>
+  undoLastPick: (draftId: string, version: number) =>
+    request<PublicDraft>(`/api/drafts/${draftId}/picks/undo`, {
+      method: "POST",
+      body: JSON.stringify({ version }),
+    }),
+  ban: (draftId: string, optionId: string, version: number, playerId?: string) =>
     request<PublicDraft>(`/api/drafts/${draftId}/bans`, {
       method: "POST",
-      body: JSON.stringify({ optionId, version, idempotencyKey: crypto.randomUUID() }),
+      body: JSON.stringify({ optionId, version, idempotencyKey: crypto.randomUUID(), playerId }),
     }),
 };

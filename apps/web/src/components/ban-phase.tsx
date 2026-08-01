@@ -28,9 +28,14 @@ export function BanPhaseView({
   const factionOptions = draft.options
     .filter((option) => option.kind === "FACTION")
     .sort((left, right) => left.sortOrder - right.sortOrder);
-  const myBan = currentPlayer
-    ? factionOptions.find((option) => option.bannedByPlayerId === currentPlayer.id)
+  const nextUnlockedPlayer = draft.players.find(
+    (player) => !factionOptions.some((option) => option.bannedByPlayerId === player.id),
+  );
+  const banPlayer = draft.canManage ? nextUnlockedPlayer : currentPlayer;
+  const playerBan = banPlayer
+    ? factionOptions.find((option) => option.bannedByPlayerId === banPlayer.id)
     : undefined;
+  const isManagingBan = Boolean(draft.canManage && banPlayer && banPlayer.id !== currentPlayer?.id);
   const lockedCount = banLockedCount(draft);
   const selected = factionOptions.find((option) => option.id === selectedOptionId);
 
@@ -38,10 +43,19 @@ export function BanPhaseView({
     if (!selected) return;
     setBusy(true);
     try {
-      const updated = await api.ban(draft.slug, selected.id, draft.version);
+      const updated = await api.ban(
+        draft.slug,
+        selected.id,
+        draft.version,
+        draft.canManage ? banPlayer?.id : undefined,
+      );
       onDraft(updated);
       setSelectedOptionId(undefined);
-      toast.success(`${selected.label} banned.`);
+      toast.success(
+        isManagingBan
+          ? `${selected.label} banned for ${banPlayer?.displayName ?? "the player"}.`
+          : `${selected.label} banned.`,
+      );
       window.Telegram?.WebApp.HapticFeedback?.notificationOccurred("success");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Ban failed");
@@ -59,25 +73,29 @@ export function BanPhaseView({
       toast.info(`${option.label} is already banned${banner ? ` by ${banner.displayName}` : ""}.`);
       return;
     }
-    if (!currentPlayer) {
+    if (!banPlayer) {
       toast.info("You are watching — only seated players ban.");
       return;
     }
-    if (myBan) {
-      toast.info(`Your ban is locked: ${myBan.label}.`);
+    if (playerBan) {
+      toast.info(`${banPlayer.displayName}'s ban is locked: ${playerBan.label}.`);
       return;
     }
     setSelectedOptionId((current) => (current === optionId ? undefined : optionId));
   }
 
-  const ctaLabel = !currentPlayer
+  const ctaLabel = !banPlayer
     ? "Watching the ban phase"
-    : myBan
+    : playerBan
       ? `Ban locked · waiting on ${draft.players.length - lockedCount} more`
       : selected
-        ? `Lock ban · ${(selected.payload as unknown as Faction).shortName}`
-        : "Select a faction to ban";
-  const ctaEnabled = Boolean(currentPlayer && !myBan && selected && !busy);
+        ? isManagingBan
+          ? `Lock for ${banPlayer.displayName} · ${(selected.payload as unknown as Faction).shortName}`
+          : `Lock ban · ${(selected.payload as unknown as Faction).shortName}`
+        : isManagingBan
+          ? `Select a ban for ${banPlayer.displayName}`
+          : "Select a faction to ban";
+  const ctaEnabled = Boolean(banPlayer && !playerBan && selected && !busy);
 
   return (
     <div style={{ position: "relative", minHeight: "100%" }}>
@@ -86,8 +104,22 @@ export function BanPhaseView({
           <i aria-hidden="true" />
           <span>BAN PHASE</span>
         </div>
-        <h2>{myBan ? "Your ban is locked" : selected ? "One ban selected" : "Ban one faction"}</h2>
-        <p>Banned factions leave the pool for everyone. Slices are drafted after bans lock.</p>
+        <h2>
+          {playerBan
+            ? `${banPlayer?.displayName}'s ban is locked`
+            : selected
+              ? isManagingBan
+                ? `Ban selected for ${banPlayer?.displayName}`
+                : "One ban selected"
+              : isManagingBan
+                ? `Choose a ban for ${banPlayer?.displayName}`
+                : "Ban one faction"}
+        </h2>
+        <p>
+          {isManagingBan
+            ? "As owner, you can lock this player's ban and keep the table moving."
+            : "Banned factions leave the pool for everyone. Slices are drafted after bans lock."}
+        </p>
         <div className="ban-ticks">
           {draft.players.map((player, index) => (
             <i key={player.id} className={cn(index < lockedCount && "is-locked")} />
@@ -104,13 +136,13 @@ export function BanPhaseView({
             const faction = option.payload as unknown as Faction;
             const meta = factionMeta[faction.id];
             const isBanned = Boolean(option.bannedByPlayerId);
-            const isMine = Boolean(currentPlayer && option.bannedByPlayerId === currentPlayer.id);
+            const isTargetBan = Boolean(banPlayer && option.bannedByPlayerId === banPlayer.id);
             const isSelected = selectedOptionId === option.id;
             return (
               <button
                 key={option.id}
                 type="button"
-                className={cn("ban-card", isBanned && "is-banned", (isSelected || isMine) && "is-selected")}
+                className={cn("ban-card", isBanned && "is-banned", (isSelected || isTargetBan) && "is-selected")}
                 onClick={() => tapFaction(option.id)}
               >
                 <span className="ban-card-name">{faction.name}</span>
@@ -120,7 +152,15 @@ export function BanPhaseView({
                       <i key={index} style={{ background: techColorHex[tech] }} />
                     ))}
                   </span>
-                  <em>{isMine ? "YOUR BAN" : isBanned ? "BANNED" : (meta?.tag ?? faction.trait)}</em>
+                  <em>
+                    {isTargetBan
+                      ? isManagingBan
+                        ? `${banPlayer?.displayName.toUpperCase()}'S BAN`
+                        : "YOUR BAN"
+                      : isBanned
+                        ? "BANNED"
+                        : (meta?.tag ?? faction.trait)}
+                  </em>
                 </span>
               </button>
             );

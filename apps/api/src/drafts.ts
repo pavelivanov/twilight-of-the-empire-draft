@@ -27,6 +27,7 @@ import { presentDraft } from "./presenter.js";
 export const draftsRouter = new Hono<ApiEnvironment>();
 
 const serializableRetryLimit = 8;
+const banSchema = pickSchema.extend({ playerId: z.string().min(1).optional() });
 
 async function withSerializableRetry<T>(
   operation: (transaction: Prisma.TransactionClient) => Promise<T>,
@@ -41,11 +42,11 @@ async function withSerializableRetry<T>(
         error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2034";
       if (!isWriteConflict) throw error;
       if (attempt === serializableRetryLimit - 1) {
-        throw new ApiError(409, "DRAFT_BUSY", "The ban phase is busy; try again");
+        throw new ApiError(409, "DRAFT_BUSY", "The draft is busy; try again");
       }
     }
   }
-  throw new ApiError(409, "DRAFT_BUSY", "The ban phase is busy; try again");
+  throw new ApiError(409, "DRAFT_BUSY", "The draft is busy; try again");
 }
 
 const slugify = (value: string): string =>
@@ -98,6 +99,19 @@ function buildOptions(seed: string, config: z.infer<typeof createDraftSchema>["c
   ];
 }
 
+function draftActionsLocked(draft: {
+  status: string;
+  turnCursor: number;
+  options: Array<{ selectedByPlayerId: string | null; bannedByPlayerId: string | null }>;
+}): boolean {
+  return (
+    draft.status === "COMPLETE" ||
+    draft.status === "ARCHIVED" ||
+    draft.turnCursor > 0 ||
+    draft.options.some((option) => option.selectedByPlayerId || option.bannedByPlayerId)
+  );
+}
+
 draftsRouter.get("/", async (context) => {
   const actor = context.get("actor");
   const drafts = await prisma.draft.findMany({
@@ -132,21 +146,25 @@ draftsRouter.post("/", zValidator("json", createDraftSchema), async (context) =>
   const seed = input.seed ?? randomUUID();
   const slug = await uniqueSlug(input.title);
   const options = buildOptions(seed, input.config);
+  const withBanPhase = input.config.bansPerPlayer > 0;
+  const startedAt = new Date();
   const randomizedPlayers = shuffle(
     input.players.map((player, inputIndex) => ({ ...player, inputIndex })),
     seededRandom(`${seed}:players`),
   );
   const draft = await prisma.$transaction(
-    async (transaction) =>
-      transaction.draft.create({
+    async (transaction) => {
+      const created = await transaction.draft.create({
         data: {
           slug,
           title: input.title,
+          status: withBanPhase ? "BANNING" : "DRAFTING",
           creatorUserId: actor.userId,
           playerCount: input.config.playerCount,
           seed,
           generatorVersion: GENERATOR_VERSION,
           config: input.config,
+          startedAt,
           players: {
             create: randomizedPlayers.map((player, orderIndex) => ({
               displayName: player.displayName,
@@ -170,8 +188,28 @@ draftsRouter.post("/", zValidator("json", createDraftSchema), async (context) =>
             },
           },
         },
-        select: { id: true },
-      }),
+        select: {
+          id: true,
+          players: {
+            orderBy: { orderIndex: "asc" },
+            select: { id: true },
+          },
+        },
+      });
+      await transaction.draftEvent.create({
+        data: {
+          draftId: created.id,
+          type: "DRAFT_STARTED",
+          actorUserId: actor.userId,
+          payload: {
+            activePlayerId: created.players[0]!.id,
+            banPhase: withBanPhase,
+            automatic: true,
+          },
+        },
+      });
+      return created;
+    },
     { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
   );
   return context.json(await presentDraft(draft.id, actor.userId), 201);
@@ -207,14 +245,16 @@ draftsRouter.post(
     const input = context.req.valid("json");
     const draftId = context.req.param("draftId");
     const playerId = context.req.param("playerId");
-    await prisma.$transaction(
+    await withSerializableRetry(
       async (transaction) => {
         const draft = await transaction.draft.findFirst({
           where: { OR: [{ id: draftId }, { slug: draftId }] },
           include: { players: true },
         });
         if (!draft) throw new ApiError(404, "DRAFT_NOT_FOUND", "Draft not found");
-        if (draft.status !== "SETUP") throw new ApiError(409, "CLAIMS_CLOSED", "Seats can only be claimed before the draft starts");
+        if (draft.status === "ARCHIVED") {
+          throw new ApiError(409, "CLAIMS_CLOSED", "Seats cannot be claimed after the draft is archived");
+        }
         if (draft.version !== input.version) throw new ApiError(409, "STALE_DRAFT", "The draft changed; refresh and try again");
         if (draft.players.some((player) => player.userId === actor.userId)) {
           throw new ApiError(409, "ALREADY_CLAIMED", "You already own a player seat");
@@ -229,7 +269,10 @@ draftsRouter.post(
           throw new ApiError(403, "USERNAME_MISMATCH", "This seat is reserved for another Telegram username");
         }
         await transaction.draftPlayer.update({ where: { id: player.id }, data: { userId: actor.userId } });
-        await transaction.draft.update({ where: { id: draft.id }, data: { version: { increment: 1 } } });
+        await transaction.draft.update({
+          where: { id: draft.id },
+          data: { version: { increment: 1 } },
+        });
         await transaction.draftEvent.create({
           data: {
             draftId: draft.id,
@@ -240,7 +283,6 @@ draftsRouter.post(
           },
         });
       },
-      { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
     );
     return context.json(await presentDraft(draftId, actor.userId));
   },
@@ -258,11 +300,14 @@ draftsRouter.delete(
       async (transaction) => {
         const draft = await transaction.draft.findFirst({
           where: { OR: [{ id: draftId }, { slug: draftId }] },
-          include: { players: true },
+          include: {
+            players: true,
+            options: { select: { selectedByPlayerId: true, bannedByPlayerId: true } },
+          },
         });
         if (!draft) throw new ApiError(404, "DRAFT_NOT_FOUND", "Draft not found");
-        if (draft.status !== "SETUP") {
-          throw new ApiError(409, "CLAIMS_CLOSED", "Seats can only be released before the draft starts");
+        if (draftActionsLocked(draft)) {
+          throw new ApiError(409, "DRAFT_LOCKED", "Seats cannot be released after the first selection");
         }
         if (draft.version !== input.version) {
           throw new ApiError(409, "STALE_DRAFT", "The draft changed; refresh and try again");
@@ -303,14 +348,17 @@ draftsRouter.delete(
       async (transaction) => {
         const draft = await transaction.draft.findFirst({
           where: { OR: [{ id: draftId }, { slug: draftId }] },
-          include: { players: { orderBy: { orderIndex: "asc" } } },
+          include: {
+            players: { orderBy: { orderIndex: "asc" } },
+            options: { select: { selectedByPlayerId: true, bannedByPlayerId: true } },
+          },
         });
         if (!draft) throw new ApiError(404, "DRAFT_NOT_FOUND", "Draft not found");
         if (draft.creatorUserId !== actor.userId) {
           throw new ApiError(403, "CREATOR_REQUIRED", "Only the creator can remove players");
         }
-        if (draft.status !== "SETUP") {
-          throw new ApiError(409, "DRAFT_STARTED", "Players cannot be removed after the draft starts");
+        if (draftActionsLocked(draft)) {
+          throw new ApiError(409, "DRAFT_LOCKED", "Players cannot be removed after the first selection");
         }
         if (draft.version !== input.version) {
           throw new ApiError(409, "STALE_DRAFT", "The draft changed; refresh and try again");
@@ -363,10 +411,15 @@ draftsRouter.post(
       async (transaction) => {
         const draft = await transaction.draft.findFirst({
           where: { OR: [{ id: draftId }, { slug: draftId }] },
+          include: {
+            options: { select: { selectedByPlayerId: true, bannedByPlayerId: true } },
+          },
         });
         if (!draft) throw new ApiError(404, "DRAFT_NOT_FOUND", "Draft not found");
         if (draft.creatorUserId !== actor.userId) throw new ApiError(403, "CREATOR_REQUIRED", "Only the creator can regenerate the pool");
-        if (draft.status !== "SETUP") throw new ApiError(409, "DRAFT_STARTED", "Pools are frozen after the draft starts");
+        if (draftActionsLocked(draft)) {
+          throw new ApiError(409, "DRAFT_LOCKED", "Pools are frozen after the first selection");
+        }
         if (draft.version !== input.version) throw new ApiError(409, "STALE_DRAFT", "The draft changed; refresh and try again");
         const seed = input.seed ?? randomUUID();
         const options = buildOptions(seed, z.parse(createDraftSchema.shape.config, draft.config));
@@ -408,9 +461,6 @@ draftsRouter.post(
         if (draft.creatorUserId !== actor.userId) throw new ApiError(403, "CREATOR_REQUIRED", "Only the creator can start the draft");
         if (draft.status !== "SETUP") throw new ApiError(409, "INVALID_STATUS", "The draft is not in setup");
         if (draft.version !== input.version) throw new ApiError(409, "STALE_DRAFT", "The draft changed; refresh and try again");
-        if (draft.players.some((player) => !player.userId)) {
-          throw new ApiError(409, "UNCLAIMED_PLAYERS", "Every player must claim their seat before the draft starts");
-        }
         const config = draftConfigSchema.parse(draft.config);
         const withBanPhase = config.bansPerPlayer > 0;
         const event = await transaction.draftEvent.create({
@@ -418,7 +468,7 @@ draftsRouter.post(
             draftId: draft.id,
             type: "DRAFT_STARTED",
             actorUserId: actor.userId,
-            payload: { activePlayerId: draft.players[0]!.id, banPhase: withBanPhase },
+            payload: { activePlayerId: draft.players[0]!.id, banPhase: withBanPhase, automatic: false },
           },
         });
         await transaction.draft.update({
@@ -448,7 +498,7 @@ draftsRouter.post(
   },
 );
 
-draftsRouter.post("/:draftId/bans", zValidator("json", pickSchema), async (context) => {
+draftsRouter.post("/:draftId/bans", zValidator("json", banSchema), async (context) => {
   const actor = context.get("actor");
   const input = context.req.valid("json");
   const draftId = context.req.param("draftId");
@@ -471,8 +521,15 @@ draftsRouter.post("/:draftId/bans", zValidator("json", pickSchema), async (conte
       if (input.version > draft.version) {
         throw new ApiError(409, "STALE_DRAFT", "The draft changed; refresh and try again");
       }
-      const player = draft.players.find((candidate) => candidate.userId === actor.userId);
-      if (!player) throw new ApiError(403, "SEAT_REQUIRED", "Only seated players can ban");
+      const actorPlayer = draft.players.find((candidate) => candidate.userId === actor.userId);
+      const player = input.playerId
+        ? draft.players.find((candidate) => candidate.id === input.playerId)
+        : actorPlayer;
+      if (input.playerId && draft.creatorUserId !== actor.userId) {
+        throw new ApiError(403, "CREATOR_REQUIRED", "Only the creator can ban for another player");
+      }
+      if (!player) throw new ApiError(403, "SEAT_REQUIRED", "Choose a valid player before locking a ban");
+      const performedByCreator = draft.creatorUserId === actor.userId && player.userId !== actor.userId;
       if (draft.options.some((candidate) => candidate.bannedByPlayerId === player.id)) {
         throw new ApiError(409, "ALREADY_BANNED", "You already locked your ban");
       }
@@ -492,7 +549,14 @@ draftsRouter.post("/:draftId/bans", zValidator("json", pickSchema), async (conte
           actorUserId: actor.userId,
           playerId: player.id,
           idempotencyKey: input.idempotencyKey,
-          payload: { optionId: option.id, optionKind: option.kind, optionKey: option.key, optionLabel: option.label },
+          payload: {
+            optionId: option.id,
+            optionKind: option.kind,
+            optionKey: option.key,
+            optionLabel: option.label,
+            playerName: player.displayName,
+            performedByCreator,
+          },
         },
       });
       const lockedCount = await transaction.draftOption.count({
@@ -524,8 +588,8 @@ draftsRouter.post("/:draftId/bans", zValidator("json", pickSchema), async (conte
             eventId: event.id,
             chatId: draft.telegramChatId,
             message: allLocked
-              ? `🚫 ${player.displayName} banned ${option.label}. All bans are locked.\n${firstPlayer.displayName}, you are first to choose.`
-              : `🚫 ${player.displayName} banned ${option.label}. ${lockedCount}/${draft.players.length} bans locked.`,
+              ? `🚫 ${performedByCreator ? `Owner banned ${option.label} for ${player.displayName}` : `${player.displayName} banned ${option.label}`}. All bans are locked.\n${firstPlayer.displayName}, you are first to choose.`
+              : `🚫 ${performedByCreator ? `Owner banned ${option.label} for ${player.displayName}` : `${player.displayName} banned ${option.label}`}. ${lockedCount}/${draft.players.length} bans locked.`,
           },
         });
       }
@@ -554,7 +618,11 @@ draftsRouter.post("/:draftId/picks", zValidator("json", pickSchema), async (cont
         if (draft.version !== input.version) throw new ApiError(409, "STALE_DRAFT", "The draft changed; refresh and try again");
         const turnOrder = createTurnOrder(draft.players.map((player) => player.id));
         const player = draft.players.find((candidate) => candidate.id === turnOrder[draft.turnCursor]);
-        if (!player || player.userId !== actor.userId) throw new ApiError(403, "NOT_YOUR_TURN", "It is not your turn");
+        if (!player) throw new ApiError(409, "INVALID_TURN", "The active draft turn is invalid");
+        const performedByCreator = draft.creatorUserId === actor.userId && player.userId !== actor.userId;
+        if (player.userId !== actor.userId && !performedByCreator) {
+          throw new ApiError(403, "NOT_YOUR_TURN", "It is not your turn");
+        }
         const option = draft.options.find((candidate) => candidate.id === input.optionId);
         if (!option) throw new ApiError(404, "OPTION_NOT_FOUND", "Draft option not found");
         if (option.bannedByPlayerId) throw new ApiError(409, "OPTION_BANNED", "That faction was banned before the draft");
@@ -581,7 +649,15 @@ draftsRouter.post("/:draftId/picks", zValidator("json", pickSchema), async (cont
             actorUserId: actor.userId,
             playerId: player.id,
             idempotencyKey: input.idempotencyKey,
-            payload: { optionId: option.id, optionKind: option.kind, optionKey: option.key, optionLabel: option.label },
+            payload: {
+              optionId: option.id,
+              optionKind: option.kind,
+              optionKey: option.key,
+              optionLabel: option.label,
+              playerName: player.displayName,
+              turnIndex: draft.turnCursor,
+              performedByCreator,
+            },
           },
         });
         await transaction.draft.update({
@@ -602,7 +678,9 @@ draftsRouter.post("/:draftId/picks", zValidator("json", pickSchema), async (cont
               draftId: draft.id,
               eventId: event.id,
               chatId: draft.telegramChatId,
-              message: `◆ ${player.displayName} selected ${option.label} (${option.kind.toLowerCase()}).\n${nextLine}`,
+              message: performedByCreator
+                ? `◆ Owner selected ${option.label} (${option.kind.toLowerCase()}) for ${player.displayName}.\n${nextLine}`
+                : `◆ ${player.displayName} selected ${option.label} (${option.kind.toLowerCase()}).\n${nextLine}`,
             },
           });
         }
@@ -612,3 +690,114 @@ draftsRouter.post("/:draftId/picks", zValidator("json", pickSchema), async (cont
   }
   return context.json(await presentDraft(draftId, actor.userId));
 });
+
+draftsRouter.post(
+  "/:draftId/picks/undo",
+  zValidator("json", z.object({ version: z.number().int().nonnegative() })),
+  async (context) => {
+    const actor = context.get("actor");
+    const input = context.req.valid("json");
+    const draftId = context.req.param("draftId");
+    await prisma.$transaction(
+      async (transaction) => {
+        const draft = await transaction.draft.findFirst({
+          where: { OR: [{ id: draftId }, { slug: draftId }] },
+          include: {
+            players: { orderBy: { orderIndex: "asc" } },
+            options: true,
+          },
+        });
+        if (!draft) throw new ApiError(404, "DRAFT_NOT_FOUND", "Draft not found");
+        if (draft.creatorUserId !== actor.userId) {
+          throw new ApiError(403, "CREATOR_REQUIRED", "Only the creator can undo a selection");
+        }
+        if (draft.status !== "DRAFTING" && draft.status !== "COMPLETE") {
+          throw new ApiError(409, "INVALID_STATUS", "There is no draft selection to undo");
+        }
+        if (draft.version !== input.version) {
+          throw new ApiError(409, "STALE_DRAFT", "The draft changed; refresh and try again");
+        }
+        if (draft.turnCursor === 0) {
+          throw new ApiError(409, "NO_SELECTION", "There is no selection to undo");
+        }
+
+        const turnOrder = createTurnOrder(draft.players.map((player) => player.id));
+        const turnIndex = draft.turnCursor - 1;
+        const player = draft.players.find((candidate) => candidate.id === turnOrder[turnIndex]);
+        if (!player) throw new ApiError(409, "INVALID_TURN", "The previous draft turn is invalid");
+
+        const selectedOptionIds = new Set(
+          draft.options
+            .filter((option) => option.selectedByPlayerId === player.id)
+            .map((option) => option.id),
+        );
+        const pickEvents = await transaction.draftEvent.findMany({
+          where: { draftId: draft.id, type: "OPTION_SELECTED" },
+          orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+        });
+        const pickEvent = pickEvents.find((event) => {
+          const payload = event.payload as Record<string, unknown>;
+          return payload.turnIndex === turnIndex && selectedOptionIds.has(String(payload.optionId ?? ""));
+        }) ?? pickEvents.find((event) => {
+          const payload = event.payload as Record<string, unknown>;
+          return selectedOptionIds.has(String(payload.optionId ?? ""));
+        });
+        const eventPayload = pickEvent?.payload as Record<string, unknown> | undefined;
+        const option = draft.options.find(
+          (candidate) =>
+            candidate.id === String(eventPayload?.optionId ?? "") && candidate.selectedByPlayerId === player.id,
+        );
+        if (!pickEvent || !option) {
+          throw new ApiError(409, "SELECTION_NOT_FOUND", "The last selection could not be found");
+        }
+
+        const released = await transaction.draftOption.updateMany({
+          where: { id: option.id, selectedByPlayerId: player.id },
+          data: { selectedByPlayerId: null, selectedAt: null },
+        });
+        if (released.count !== 1) {
+          throw new ApiError(409, "SELECTION_CHANGED", "The last selection already changed");
+        }
+        const event = await transaction.draftEvent.create({
+          data: {
+            draftId: draft.id,
+            type: "PICK_REVERTED",
+            actorUserId: actor.userId,
+            playerId: player.id,
+            payload: {
+              originalEventId: pickEvent.id,
+              optionId: option.id,
+              optionKind: option.kind,
+              optionKey: option.key,
+              optionLabel: option.label,
+              playerName: player.displayName,
+              turnIndex,
+              performedByCreator: true,
+            },
+          },
+        });
+        await transaction.draft.update({
+          where: { id: draft.id },
+          data: {
+            turnCursor: turnIndex,
+            version: { increment: 1 },
+            status: "DRAFTING",
+            completedAt: null,
+          },
+        });
+        if (draft.telegramChatId) {
+          await transaction.notificationOutbox.create({
+            data: {
+              draftId: draft.id,
+              eventId: event.id,
+              chatId: draft.telegramChatId,
+              message: `↩ Owner undid ${option.label} for ${player.displayName}. It is ${player.displayName}'s turn again.`,
+            },
+          });
+        }
+      },
+      { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+    );
+    return context.json(await presentDraft(draftId, actor.userId));
+  },
+);

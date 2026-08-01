@@ -15,6 +15,7 @@ type LogRow =
       who: string;
       verb: string;
       target: string;
+      beneficiary?: string;
       tag: string;
     };
 
@@ -41,20 +42,29 @@ export function DraftActivity({ draft }: { draft: PublicDraft }) {
 
   const rows = useMemo<LogRow[]>(() => {
     const ascending = [...draft.events].sort((left, right) => left.createdAt.localeCompare(right.createdAt));
-    let pickIndex = 0;
+    let draftCursor = 0;
     const annotated = ascending.map((event) => {
-      const isPick = event.type === "OPTION_SELECTED";
-      const index = isPick ? pickIndex++ : -1;
-      return { event, pickIndex: index, round: isPick ? Math.floor(index / playerCount) + 1 : 0 };
+      const isSelection = event.type === "OPTION_SELECTED" || event.type === "PICK_REVERTED";
+      if (!isSelection) return { event, turnIndex: -1, round: 0 };
+      const storedTurnIndex = event.payload.turnIndex;
+      const turnIndex =
+        typeof storedTurnIndex === "number" && Number.isInteger(storedTurnIndex)
+          ? storedTurnIndex
+          : event.type === "PICK_REVERTED"
+            ? Math.max(0, draftCursor - 1)
+            : draftCursor;
+      draftCursor = event.type === "PICK_REVERTED" ? turnIndex : turnIndex + 1;
+      return { event, turnIndex, round: Math.floor(turnIndex / playerCount) + 1 };
     });
     const filtered = annotated.filter(({ event }) => {
-      if (filter === "picks") return event.type === "OPTION_SELECTED";
-      if (filter === "admin") return event.type !== "OPTION_SELECTED";
+      const isSelection = event.type === "OPTION_SELECTED" || event.type === "PICK_REVERTED";
+      if (filter === "picks") return isSelection;
+      if (filter === "admin") return !isSelection;
       return true;
     });
     const result: LogRow[] = [];
     let lastRound: number | null = null;
-    for (const { event, pickIndex: index, round } of [...filtered].reverse()) {
+    for (const { event, turnIndex, round } of [...filtered].reverse()) {
       if (round !== lastRound) {
         lastRound = round;
         result.push({
@@ -64,39 +74,60 @@ export function DraftActivity({ draft }: { draft: PublicDraft }) {
         });
       }
       const time = new Date(event.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-      const who = event.playerId ? (players.get(event.playerId)?.displayName ?? "Someone") : "Host";
+      const playerName = event.playerId ? (players.get(event.playerId)?.displayName ?? "Someone") : undefined;
       if (event.type === "OPTION_SELECTED") {
+        const optionKind = String(event.payload.optionKind ?? "");
+        const performedByCreator = event.payload.performedByCreator === true;
+        result.push({
+          kind: "entry",
+          id: event.id,
+          time,
+          accent: kindAccent[optionKind] ?? "#6b7480",
+          who: performedByCreator ? "Owner" : (playerName ?? "Someone"),
+          verb: performedByCreator ? "selected" : "took",
+          target: String(event.payload.optionLabel ?? ""),
+          beneficiary: performedByCreator ? playerName : undefined,
+          tag: `${optionKind} · PICK ${turnIndex + 1}/${draft.totalTurns}${performedByCreator ? " · OWNER ACTION" : ""}`,
+        });
+      } else if (event.type === "PICK_REVERTED") {
         const optionKind = String(event.payload.optionKind ?? "");
         result.push({
           kind: "entry",
           id: event.id,
           time,
           accent: kindAccent[optionKind] ?? "#6b7480",
-          who,
-          verb: "took",
+          who: "Owner",
+          verb: "undid",
           target: String(event.payload.optionLabel ?? ""),
-          tag: `${optionKind} · PICK ${index + 1}/${draft.totalTurns}`,
+          beneficiary: playerName,
+          tag: `PICK ${turnIndex + 1}/${draft.totalTurns} · OWNER ACTION`,
         });
       } else if (event.type === "PLAYER_BANNED") {
+        const performedByCreator = event.payload.performedByCreator === true;
         result.push({
           kind: "entry",
           id: event.id,
           time,
           accent: "#cf6b57",
-          who,
+          who: performedByCreator ? "Owner" : (playerName ?? "Someone"),
           verb: "banned",
           target: String(event.payload.optionLabel ?? ""),
-          tag: "BAN PHASE",
+          beneficiary: performedByCreator ? playerName : undefined,
+          tag: `BAN PHASE${performedByCreator ? " · OWNER ACTION" : ""}`,
         });
       } else {
         const subject = event.payload.playerName ? String(event.payload.playerName) : "";
+        const automaticStart = event.type === "DRAFT_STARTED" && event.payload.automatic === true;
+        const who = automaticStart ? "Draft" : (playerName ?? "Host");
         result.push({
           kind: "entry",
           id: event.id,
           time,
           accent: "#6b7480",
           who,
-          verb: adminLabels[event.type] ?? event.type.replaceAll("_", " ").toLowerCase(),
+          verb: automaticStart
+            ? "started automatically"
+            : (adminLabels[event.type] ?? event.type.replaceAll("_", " ").toLowerCase()),
           target: subject === who ? "" : subject,
           tag: "TABLE ACTION",
         });
@@ -148,6 +179,11 @@ export function DraftActivity({ draft }: { draft: PublicDraft }) {
               <div className="log-entry-main">
                 <p>
                   <strong>{row.who}</strong> {row.verb} {row.target && <em>{row.target}</em>}
+                  {row.beneficiary && (
+                    <>
+                      {" "}for <strong>{row.beneficiary}</strong>
+                    </>
+                  )}
                 </p>
                 <small>{row.tag}</small>
               </div>

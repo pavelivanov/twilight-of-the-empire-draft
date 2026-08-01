@@ -56,14 +56,17 @@ export function DraftScreen({
   const activePlayer = draft.players.find((player) => player.id === draft.activePlayerId);
   const currentPlayer = draft.players.find((player) => player.isCurrentUser);
   const isMyTurn = Boolean(currentPlayer && activePlayer && currentPlayer.id === activePlayer.id);
+  const isManagingTurn = Boolean(draft.canManage && activePlayer && !isMyTurn);
+  const canSelect = Boolean(isMyTurn || isManagingTurn);
+  const boardPlayer = isManagingTurn ? activePlayer : currentPlayer;
 
-  const mySlice = currentPlayer ? selectedOptionOf(draft, currentPlayer.id, "SLICE") : undefined;
-  const myFaction = currentPlayer ? selectedOptionOf(draft, currentPlayer.id, "FACTION") : undefined;
-  const mySeat = currentPlayer ? selectedOptionOf(draft, currentPlayer.id, "POSITION") : undefined;
-  const myPickBySegment: Record<Segment, PublicOption | undefined> = {
-    slices: mySlice,
-    factions: myFaction,
-    seats: mySeat,
+  const boardSlice = boardPlayer ? selectedOptionOf(draft, boardPlayer.id, "SLICE") : undefined;
+  const boardFaction = boardPlayer ? selectedOptionOf(draft, boardPlayer.id, "FACTION") : undefined;
+  const boardSeat = boardPlayer ? selectedOptionOf(draft, boardPlayer.id, "POSITION") : undefined;
+  const boardPickBySegment: Record<Segment, PublicOption | undefined> = {
+    slices: boardSlice,
+    factions: boardFaction,
+    seats: boardSeat,
   };
 
   useEffect(() => {
@@ -97,15 +100,17 @@ export function DraftScreen({
     if (isComplete) return "The draft is complete.";
     if (option.bannedByPlayerId) return `${option.label} was banned before the draft.`;
     if (option.selectedByPlayerId) return `${option.label} is already taken by ${playerName(option.selectedByPlayerId)}.`;
-    if (!currentPlayer) return "You are watching — claim a seat to pick.";
-    if (!isMyTurn) return `Not your turn — ${activePlayer?.displayName ?? "someone"} is picking.`;
+    if (!canSelect) {
+      if (!currentPlayer) return "You are watching — claim a seat to pick.";
+      return `Not your turn — ${activePlayer?.displayName ?? "someone"} is picking.`;
+    }
     const kindKey = option.kind === "SLICE" ? "slices" : option.kind === "FACTION" ? "factions" : "seats";
-    if (myPickBySegment[kindKey as Segment]) {
+    if (boardPickBySegment[kindKey as Segment]) {
       return option.kind === "SLICE"
-        ? "You already hold a slice."
+        ? `${boardPlayer?.displayName ?? "This player"} already holds a slice.`
         : option.kind === "FACTION"
-          ? "You already hold a faction this draft."
-          : "You already hold a seat.";
+          ? `${boardPlayer?.displayName ?? "This player"} already holds a faction this draft.`
+          : `${boardPlayer?.displayName ?? "This player"} already holds a seat.`;
     }
     return null;
   }
@@ -117,7 +122,11 @@ export function DraftScreen({
       onDraft(updated);
       setSelectedOptionId(undefined);
       setSheetSliceId(undefined);
-      toast.success(`You took ${option.label}.`);
+      toast.success(
+        isManagingTurn
+          ? `${option.label} selected for ${activePlayer?.displayName ?? "the active player"}.`
+          : `You took ${option.label}.`,
+      );
       window.Telegram?.WebApp.HapticFeedback?.notificationOccurred("success");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Pick failed");
@@ -144,10 +153,12 @@ export function DraftScreen({
     ? sheetOption.selectedByPlayerId
       ? `Taken by ${playerName(sheetOption.selectedByPlayerId)}`
       : sheetGuard === null
-        ? "Take this slice"
-        : mySlice
-          ? "You already hold a slice"
-          : !isMyTurn
+        ? isManagingTurn
+          ? `Take for ${activePlayer?.displayName ?? "active player"}`
+          : "Take this slice"
+        : boardSlice
+          ? `${boardPlayer?.displayName ?? "This player"} already holds a slice`
+          : !canSelect
             ? `Waiting on ${activePlayer?.displayName ?? "the table"}`
             : "Unavailable"
     : "";
@@ -177,9 +188,9 @@ export function DraftScreen({
   }
 
   const boardSlots: Array<{ segment: Segment; kicker: string; pick?: PublicOption }> = [
-    { segment: "slices", kicker: "SLICE", pick: mySlice },
-    { segment: "factions", kicker: "FACTION", pick: myFaction },
-    { segment: "seats", kicker: "SEAT", pick: mySeat },
+    { segment: "slices", kicker: "SLICE", pick: boardSlice },
+    { segment: "factions", kicker: "FACTION", pick: boardFaction },
+    { segment: "seats", kicker: "SEAT", pick: boardSeat },
   ];
   const lockedCount = boardSlots.filter((slot) => slot.pick).length;
 
@@ -215,7 +226,7 @@ export function DraftScreen({
 
             <div className="board-row">
               <div className="mono-label" style={{ marginBottom: 8 }}>
-                YOUR BOARD · {lockedCount} OF 3 LOCKED
+                {isManagingTurn ? `${activePlayer?.displayName.toUpperCase()}'S BOARD` : "YOUR BOARD"} · {lockedCount} OF 3 LOCKED
               </div>
               <div className="board-slots">
                 {boardSlots.map((slot) => {
@@ -397,7 +408,8 @@ export function DraftScreen({
               Cancel
             </button>
             <button type="button" className="btn-accent" disabled={busy} onClick={() => void commitPick(selectedOption)}>
-              Take {selectedOption.kind === "POSITION" ? selectedOption.label.toLowerCase() : selectedOption.label}
+              {isManagingTurn ? `Take for ${activePlayer?.displayName}` : "Take"}{" "}
+              {selectedOption.kind === "POSITION" ? selectedOption.label.toLowerCase() : selectedOption.label}
             </button>
           </div>
         )}

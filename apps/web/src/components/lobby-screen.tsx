@@ -27,7 +27,6 @@ export function LobbyScreen({
   const [sheetSliceId, setSheetSliceId] = useState<string>();
   const [busy, setBusy] = useState(false);
   const claimed = draft.players.filter((player) => player.isClaimed).length;
-  const allClaimed = claimed === draft.players.length;
   const slices = draft.options
     .filter((option) => option.kind === "SLICE")
     .sort((left, right) => left.sortOrder - right.sortOrder);
@@ -38,9 +37,9 @@ export function LobbyScreen({
       const updated = await api.startDraft(draft.slug, draft.version);
       onDraft(updated);
       onViewChange("draft");
-      toast.success("Draft started.");
+      toast.success("Drafting started. Players can still claim their seats.");
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Could not start the draft");
+      toast.error(error instanceof Error ? error.message : "Could not start drafting");
     } finally {
       setBusy(false);
     }
@@ -51,8 +50,6 @@ export function LobbyScreen({
     setDemoIdentity({ id: playerId === creatorPlayerId ? "creator" : playerId, name });
     onDraft(await api.getDraft(draft.slug));
   }
-
-  const showStartDock = view === "table" && draft.canManage && allClaimed;
 
   return (
     <main className="room-shell">
@@ -84,11 +81,26 @@ export function LobbyScreen({
         {view === "table" && (
           <>
             <TableView draft={draft} onDraft={onDraft} busy={busy} setBusy={setBusy} />
-            {showStartDock && (
+            {draft.canManage && (
               <div style={{ padding: "0 16px 24px" }}>
-                <button type="button" className="btn-accent is-block" disabled={busy} onClick={() => void startDraft()}>
-                  Start draft — every seat is claimed
+                <button
+                  type="button"
+                  className="btn-accent is-block"
+                  disabled={busy}
+                  onClick={() => void startDraft()}
+                >
+                  Start selections now
                 </button>
+                <p
+                  style={{
+                    margin: "8px 0 0",
+                    color: "var(--soft)",
+                    font: "400 11.5px/1.45 var(--font-sans)",
+                    textAlign: "center",
+                  }}
+                >
+                  Players can claim their seats while drafting is running.
+                </p>
               </div>
             )}
           </>
