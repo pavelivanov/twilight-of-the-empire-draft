@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { groupDraftLaunchReplyMarkup, groupPickerReplyMarkup, resolveNewDraftTarget } from "./telegram.js";
+import {
+  groupDraftLaunchReplyMarkup,
+  groupPickerReplyMarkup,
+  notificationChatPickerReplyMarkup,
+  resolveNewDraftTarget,
+} from "./telegram.js";
 
 describe("Telegram group integration", () => {
   it("requests only groups where the user and bot can be administrators", () => {
@@ -27,6 +32,23 @@ describe("Telegram group integration", () => {
       request_username: true,
       user_administrator_rights: { can_manage_chat: true },
       bot_administrator_rights: { can_manage_chat: true },
+    });
+  });
+
+  it("can request a channel with posting rights for browser-managed notifications", () => {
+    const markup = notificationChatPickerReplyMarkup(43, "channel") as {
+      keyboard: Array<
+        Array<{
+          request_chat: {
+            chat_is_channel: boolean;
+            bot_administrator_rights: { can_post_messages: boolean };
+          };
+        }>
+      >;
+    };
+    expect(markup.keyboard[0]![0]!.request_chat).toMatchObject({
+      chat_is_channel: true,
+      bot_administrator_rights: { can_post_messages: true },
     });
   });
 

@@ -5,6 +5,7 @@ import { cors } from "hono/cors";
 import { logger } from "hono/logger";
 
 import { authenticate, type ApiEnvironment } from "./auth.js";
+import { browserSessionRouter } from "./browser-session.js";
 import { draftsRouter } from "./drafts.js";
 import { env } from "./env.js";
 import { ApiError } from "./errors.js";
@@ -36,6 +37,17 @@ app.get("/health", async (context) => {
   return context.json({ status: "ok" });
 });
 app.route("/api/telegram", telegramRouter);
+app.route("/api/auth", browserSessionRouter);
+app.use("/api/auth/me", authenticate);
+app.get("/api/auth/me", (context) => {
+  const actor = context.get("actor");
+  return context.json({
+    id: actor.userId,
+    displayName: actor.displayName,
+    username: actor.username,
+    mode: actor.authMode,
+  });
+});
 app.use("/api/drafts/*", authenticate);
 app.use("/api/drafts", authenticate);
 app.route("/api/drafts", draftsRouter);

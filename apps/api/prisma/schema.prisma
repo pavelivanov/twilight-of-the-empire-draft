@@ -54,6 +54,21 @@ model User {
   drafts      Draft[]       @relation("DraftCreator")
   seats       DraftPlayer[]
   events      DraftEvent[]  @relation("EventActor")
+  webSessions BrowserSession[]
+}
+
+model BrowserSession {
+  id         String    @id @default(cuid())
+  tokenHash  String    @unique
+  userId     String?
+  createdAt  DateTime  @default(now())
+  expiresAt  DateTime
+  linkedAt   DateTime?
+  lastUsedAt DateTime?
+  user       User?     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([expiresAt])
+  @@index([userId])
 }
 
 model Draft {

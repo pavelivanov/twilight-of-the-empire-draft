@@ -1,6 +1,8 @@
 import { useMemo, useState } from "react";
 import {
   ArrowRightIcon,
+  BellIcon,
+  BellOffIcon,
   ChevronDownIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
@@ -29,7 +31,13 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Drawer, DrawerContent } from "@/components/ui/drawer";
-import { api } from "@/lib/api";
+import { api, getAuthMode } from "@/lib/api";
+import {
+  disableBrowserNotifications,
+  enableBrowserNotifications,
+  getBrowserNotificationState,
+  type BrowserNotificationState,
+} from "@/lib/browser-notifications";
 import { sliceDetails, techIcon, traitIcon } from "@/lib/ti4-meta";
 import { cn } from "@/lib/utils";
 
@@ -632,6 +640,9 @@ export function ManageSheet({
   const [busy, setBusy] = useState(false);
   const [confirming, setConfirming] = useState<"delete" | "undo" | { removePlayerId: string }>();
   const [removeMode, setRemoveMode] = useState(false);
+  const [browserNotifications, setBrowserNotifications] = useState<BrowserNotificationState>(() =>
+    getBrowserNotificationState(),
+  );
   const canEditDraft =
     draft.turnCursor === 0 &&
     draft.status !== "COMPLETE" &&
@@ -666,17 +677,30 @@ export function ManageSheet({
     }
   }
 
-  async function requestTelegramGroup() {
+  async function requestTelegramChat(target: "group" | "channel") {
     setBusy(true);
     try {
-      await api.requestTelegramGroup(draft.slug);
+      await api.requestTelegramChat(draft.slug, target);
       window.Telegram?.WebApp.HapticFeedback?.notificationOccurred("success");
-      toast.success("Group picker sent to your bot chat. Close the Mini App to choose.");
+      toast.success(
+        getAuthMode() === "telegram"
+          ? `${target === "group" ? "Group" : "Channel"} picker sent to your bot chat. Close the Mini App to choose.`
+          : `Open Telegram—the ${target} picker is waiting in your bot chat.`,
+      );
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Could not open the group picker");
     } finally {
       setBusy(false);
     }
+  }
+
+  async function toggleBrowserNotifications() {
+    const next =
+      browserNotifications === "on" ? disableBrowserNotifications() : await enableBrowserNotifications();
+    setBrowserNotifications(next);
+    if (next === "on") toast.success("Browser notifications enabled for draft activity.");
+    else if (next === "blocked") toast.error("Notifications are blocked in this browser's site settings.");
+    else if (next === "unsupported") toast.error("This browser does not support desktop notifications.");
   }
 
   const removablePlayers = draft.players.filter(() => draft.players.length > 3);
@@ -766,21 +790,67 @@ export function ManageSheet({
                   <button
                     type="button"
                     className="manage-row is-hot"
-                    disabled={!window.Telegram?.WebApp.initData || busy}
-                    onClick={() => void requestTelegramGroup()}
+                    disabled={getAuthMode() === "demo" || busy}
+                    onClick={() => void requestTelegramChat("group")}
                   >
                     <i />
                     <span className="manage-row-main">
-                      <strong>{draft.telegramChannel ? "Change notification group" : "Connect notification group"}</strong>
+                      <strong>{draft.telegramChannel ? "Change to a Telegram group" : "Connect a Telegram group"}</strong>
                       <small>
                         {draft.telegramChannel
                           ? `Posting every action to ${draft.telegramChannel.title}.`
-                          : window.Telegram?.WebApp.initData
+                          : getAuthMode() === "telegram"
                             ? "Choose from groups where you are an administrator."
-                            : "Open the draft in Telegram to choose a group."}
+                            : getAuthMode() === "browser"
+                              ? "The secure picker will arrive in your bot chat."
+                              : "Connect a Telegram account to choose a group."}
                       </small>
                     </span>
                     <ChevronRightIcon className="chevron" aria-hidden="true" />
+                  </button>
+                  <button
+                    type="button"
+                    className="manage-row"
+                    disabled={getAuthMode() === "demo" || busy}
+                    onClick={() => void requestTelegramChat("channel")}
+                  >
+                    <i />
+                    <span className="manage-row-main">
+                      <strong>{draft.telegramChannel ? "Change to a Telegram channel" : "Connect a Telegram channel"}</strong>
+                      <small>Choose a channel where you and the bot can post as administrators.</small>
+                    </span>
+                    <ChevronRightIcon className="chevron" aria-hidden="true" />
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {getAuthMode() !== "telegram" && (
+              <div className="manage-group">
+                <small>THIS BROWSER</small>
+                <div className="manage-card">
+                  <button
+                    type="button"
+                    className={cn("manage-row", browserNotifications === "on" && "is-hot")}
+                    disabled={browserNotifications === "unsupported"}
+                    onClick={() => void toggleBrowserNotifications()}
+                  >
+                    <i />
+                    <span className="manage-row-main">
+                      <strong>
+                        {browserNotifications === "on" ? "Browser notifications on" : "Enable browser notifications"}
+                      </strong>
+                      <small>
+                        {browserNotifications === "on"
+                          ? "Turn and activity alerts appear while Imperium Draft is open."
+                          : browserNotifications === "blocked"
+                            ? "Allow notifications in this browser's site settings."
+                            : browserNotifications === "unsupported"
+                              ? "Desktop notifications are not supported here."
+                              : "Get turn and activity alerts when this tab is in the background."}
+                      </small>
+                    </span>
+                    {browserNotifications === "on" ? <BellIcon className="chevron" /> : <BellOffIcon className="chevron" />}
                   </button>
                 </div>
               </div>

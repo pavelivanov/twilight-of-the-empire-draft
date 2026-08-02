@@ -8,7 +8,7 @@ import { MapBoard } from "@/components/map-board";
 import { ManageSheet, RoomTopbar, TableView } from "@/components/room-parts";
 import { SliceCard } from "@/components/slice-board";
 import { SliceSheet } from "@/components/room-parts";
-import { api, getDemoIdentity, setDemoIdentity } from "@/lib/api";
+import { api, getAuthMode, getDemoIdentity, setDemoIdentity } from "@/lib/api";
 
 export function LobbyScreen({
   draft,
@@ -60,7 +60,7 @@ export function LobbyScreen({
         onManage={() => setManageOpen(true)}
       />
 
-      {!window.Telegram?.WebApp.initData && (
+      {getAuthMode() === "demo" && (
         <div className="demo-rail">
           <span>Preview as</span>
           {draft.players.map((player) => (

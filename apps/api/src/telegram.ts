@@ -5,6 +5,7 @@ import { Hono } from "hono";
 
 import { env } from "./env.js";
 import { ApiError } from "./errors.js";
+import { claimBrowserSession } from "./browser-session.js";
 import { prisma } from "./prisma.js";
 
 type TelegramUpdate = {
@@ -33,7 +34,10 @@ export type TelegramChat = {
 
 type TelegramChatMember = {
   status: "creator" | "administrator" | "member" | "restricted" | "left" | "kicked";
+  can_post_messages?: boolean;
 };
+
+export type TelegramNotificationTarget = "group" | "channel";
 
 type TelegramUser = { id: number };
 
@@ -94,16 +98,27 @@ const groupAdministratorRights = {
 };
 
 export function groupPickerReplyMarkup(requestId: number): Record<string, unknown> {
+  return notificationChatPickerReplyMarkup(requestId, "group");
+}
+
+export function notificationChatPickerReplyMarkup(
+  requestId: number,
+  target: TelegramNotificationTarget,
+): Record<string, unknown> {
+  const isChannel = target === "channel";
+  const administratorRights = isChannel
+    ? { ...groupAdministratorRights, can_post_messages: true }
+    : groupAdministratorRights;
   return {
     keyboard: [
       [
         {
-          text: "Choose notification group",
+          text: `Choose notification ${target}`,
           request_chat: {
             request_id: requestId,
-            chat_is_channel: false,
-            user_administrator_rights: groupAdministratorRights,
-            bot_administrator_rights: groupAdministratorRights,
+            chat_is_channel: isChannel,
+            user_administrator_rights: administratorRights,
+            bot_administrator_rights: administratorRights,
             request_title: true,
             request_username: true,
           },
@@ -112,19 +127,20 @@ export function groupPickerReplyMarkup(requestId: number): Record<string, unknow
     ],
     resize_keyboard: true,
     one_time_keyboard: true,
-    input_field_placeholder: "Choose a group you administer",
+    input_field_placeholder: `Choose a ${target} you administer`,
   };
 }
 
-export async function sendTelegramGroupPicker(
+export async function sendTelegramChatPicker(
   userChatId: string,
   draftTitle: string,
   requestId: number,
+  target: TelegramNotificationTarget,
 ): Promise<void> {
   await sendTelegramMessage(
     userChatId,
-    `Choose where to post every action from ${draftTitle}. Telegram only shows groups you administer and will grant the bot administrator access.`,
-    groupPickerReplyMarkup(requestId),
+    `Choose a ${target} for ${draftTitle}. Telegram only shows ${target}s you administer and will grant the bot the access needed to post notifications.`,
+    notificationChatPickerReplyMarkup(requestId, target),
   );
 }
 
@@ -149,21 +165,29 @@ function canManageGroup(member: TelegramChatMember): boolean {
   return member.status === "creator" || member.status === "administrator";
 }
 
-export async function verifyTelegramNotificationChatAccess(chatId: string, userId: number): Promise<TelegramChat> {
+export async function verifyTelegramNotificationChatAccess(
+  chatId: string,
+  userId: number,
+  expectedTarget?: TelegramNotificationTarget,
+): Promise<TelegramChat> {
   const bot = await telegramApi<TelegramUser>("getMe", {});
   const [chat, userMember, botMember] = await Promise.all([
     telegramApi<TelegramChat>("getChat", { chat_id: chatId }),
     telegramApi<TelegramChatMember>("getChatMember", { chat_id: chatId, user_id: userId }),
     telegramApi<TelegramChatMember>("getChatMember", { chat_id: chatId, user_id: bot.id }),
   ]);
-  if (!new Set(["supergroup", "group"]).has(chat.type)) {
-    throw new Error("Choose a Telegram group, not a channel");
+  const target = chat.type === "channel" ? "channel" : new Set(["supergroup", "group"]).has(chat.type) ? "group" : null;
+  if (!target || (expectedTarget && target !== expectedTarget)) {
+    throw new Error(`Choose a Telegram ${expectedTarget ?? "group or channel"}`);
   }
   if (!canManageGroup(userMember)) {
-    throw new Error("You must be an administrator in this group");
+    throw new Error(`You must be an administrator in this ${target}`);
   }
   if (!canManageGroup(botMember)) {
-    throw new Error("Make the bot an administrator in this group");
+    throw new Error(`Make the bot an administrator in this ${target}`);
+  }
+  if (target === "channel" && botMember.can_post_messages === false) {
+    throw new Error("Allow the bot to post messages in this channel");
   }
   return chat;
 }
@@ -234,7 +258,7 @@ async function bindSharedGroup(
         draftId: draft.id,
         eventId: event.id,
         chatId: String(shared.chat_id),
-        message: `📣 Owner created ${draft.title} and connected this group. Every accepted player and owner action will be posted here.\nOpen the draft: ${miniAppLink(draft.slug)}`,
+        message: `📣 Owner connected ${draft.title} to this Telegram chat. Every accepted player and owner action will be posted here.\nOpen the draft: ${miniAppLink(draft.slug)}`,
       },
     });
     return true;
@@ -339,10 +363,20 @@ telegramRouter.post("/webhook", async (context) => {
   if (!message.text) return context.json({ ok: true });
 
   if (command === "/start") {
-    await sendTelegramMessage(
-      String(message.chat.id),
-      `Create or join a Twilight Imperium draft in the Mini App:\n${miniAppLink()}`,
-    );
+    if (argument?.startsWith("web_") && message.chat.type === "private") {
+      const result = await claimBrowserSession(argument.slice(4), user.id);
+      await sendTelegramMessage(
+        String(message.chat.id),
+        result === "expired"
+          ? "That browser sign-in link has expired. Return to the website and request a new one."
+          : "Browser connected. You can return to Imperium Draft and use the full app there.",
+      );
+    } else {
+      await sendTelegramMessage(
+        String(message.chat.id),
+        `Create or join a Twilight Imperium draft in the Mini App:\n${miniAppLink()}`,
+      );
+    }
   } else if (command === "/draft" && !argument) {
     await sendTelegramMessage(String(message.chat.id), "Usage: /draft <draft-link-code>");
   } else if (command === "/draft" && argument) {

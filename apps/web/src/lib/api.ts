@@ -5,6 +5,27 @@ const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:3001";
 export type DemoIdentity = { id: string; name: string };
 
 const demoIdentityKey = "imperium-demo-identity";
+const browserSessionKey = "imperium-browser-session";
+
+export type AuthMode = "telegram" | "browser" | "demo";
+
+export function getBrowserSessionToken(): string | undefined {
+  return typeof localStorage === "undefined" ? undefined : (localStorage.getItem(browserSessionKey) ?? undefined);
+}
+
+export function setBrowserSessionToken(token: string): void {
+  localStorage.setItem(browserSessionKey, token);
+}
+
+export function clearBrowserSessionToken(): void {
+  localStorage.removeItem(browserSessionKey);
+}
+
+export function getAuthMode(): AuthMode {
+  if (typeof window !== "undefined" && window.Telegram?.WebApp.initData) return "telegram";
+  if (getBrowserSessionToken()) return "browser";
+  return "demo";
+}
 
 export function getDemoIdentity(): DemoIdentity {
   const stored = localStorage.getItem(demoIdentityKey);
@@ -19,6 +40,8 @@ export function setDemoIdentity(identity: DemoIdentity): void {
 function authHeaders(): Record<string, string> {
   const initData = window.Telegram?.WebApp.initData;
   if (initData) return { authorization: `tma ${initData}` };
+  const browserSession = getBrowserSessionToken();
+  if (browserSession) return { authorization: `Bearer ${browserSession}` };
   const identity = getDemoIdentity();
   return {
     "x-demo-user-id": identity.id,
@@ -64,15 +87,39 @@ export type CreateDraftInput = {
   telegramLaunchToken?: string;
 };
 
+export type BrowserSessionStart = {
+  token: string;
+  botUrl: string;
+  expiresAt: string;
+};
+
+export type CurrentUser = {
+  id: string;
+  displayName: string;
+  username?: string;
+  mode: AuthMode;
+};
+
 export const api = {
+  getCurrentUser: () => request<CurrentUser>("/api/auth/me"),
+  beginBrowserSession: () =>
+    request<BrowserSessionStart>("/api/auth/browser-sessions", { method: "POST", body: "{}" }),
+  getBrowserSessionStatus: (token: string) =>
+    request<{ status: "pending" | "expired" | "authenticated" }>("/api/auth/browser-sessions/status", {
+      method: "POST",
+      body: JSON.stringify({ token }),
+    }),
   createDraft: (input: CreateDraftInput) =>
     request<PublicDraft>("/api/drafts", { method: "POST", body: JSON.stringify(input) }),
   listDrafts: () => request<PublicDraftSummary[]>("/api/drafts"),
   getDraft: (draftId: string) => request<PublicDraft>(`/api/drafts/${draftId}`),
   deleteDraft: (draftId: string) =>
     request<{ id: string; slug: string }>(`/api/drafts/${draftId}`, { method: "DELETE" }),
-  requestTelegramGroup: (draftId: string) =>
-    request<{ requested: true }>(`/api/drafts/${draftId}/telegram-channel-picker`, { method: "POST" }),
+  requestTelegramChat: (draftId: string, target: "group" | "channel") =>
+    request<{ requested: true }>(`/api/drafts/${draftId}/telegram-channel-picker`, {
+      method: "POST",
+      body: JSON.stringify({ target }),
+    }),
   claimPlayer: (draftId: string, playerId: string, version: number) =>
     request<PublicDraft>(`/api/drafts/${draftId}/players/${playerId}/claim`, {
       method: "POST",

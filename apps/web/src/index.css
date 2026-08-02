@@ -183,6 +183,10 @@
   from { opacity: 0; }
   to { opacity: 1; }
 }
+@keyframes orbit-in {
+  from { opacity: 0; transform: scale(0.82) rotate(-12deg); }
+  to { opacity: 1; transform: scale(1) rotate(0); }
+}
 
 @layer components {
 
@@ -356,6 +360,144 @@
     padding: 24px 16px;
     max-width: 480px;
     margin: 0 auto;
+  }
+
+  /* ---------- browser connection ---------- */
+
+  .connect-shell {
+    width: 100%;
+    max-width: 560px;
+    min-height: calc(100dvh - var(--app-content-inset-top) - var(--app-content-inset-bottom));
+    margin: 0 auto;
+    display: flex;
+    flex-direction: column;
+    animation: fadein 0.2s ease;
+  }
+
+  .connect-topbar {
+    height: 58px;
+    padding: 0 18px;
+    border-bottom: 1px solid var(--line);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .connect-topbar > span {
+    font: 500 9px/1 var(--font-mono);
+    letter-spacing: 0.14em;
+    color: var(--faint);
+  }
+
+  .connect-hero {
+    flex: 1 1 auto;
+    padding: 52px 24px 28px;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    justify-content: center;
+  }
+
+  .connect-orbit {
+    position: relative;
+    width: 116px;
+    height: 100px;
+    margin-bottom: 34px;
+    animation: orbit-in 0.55s cubic-bezier(.2,.8,.2,1) both;
+  }
+  .connect-orbit::before,
+  .connect-orbit::after,
+  .connect-orbit > i {
+    content: "";
+    position: absolute;
+    inset: 0;
+    clip-path: polygon(25% 0, 75% 0, 100% 50%, 75% 100%, 25% 100%, 0 50%);
+  }
+  .connect-orbit::before { background: #1f2833; }
+  .connect-orbit::after { inset: 2px; background: var(--background); }
+  .connect-orbit > i {
+    inset: 17px 20px;
+    background: var(--lime-wash);
+    border: none;
+  }
+  .connect-orbit > span {
+    position: absolute;
+    inset: 0;
+    z-index: 2;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--lime);
+  }
+  .connect-orbit svg { width: 28px; height: 28px; transform: translate(-1px, 1px); }
+
+  .connect-hero h1 {
+    max-width: 430px;
+    margin: 10px 0 12px;
+    font: 600 clamp(31px, 8vw, 44px)/1.02 var(--font-serif);
+    letter-spacing: -0.025em;
+    color: var(--ink);
+  }
+  .connect-hero > p {
+    max-width: 420px;
+    margin: 0 0 26px;
+    font: 400 14px/1.55 var(--font-sans);
+    color: var(--soft);
+  }
+  .connect-action {
+    width: 100%;
+    min-height: 50px;
+    text-decoration: none;
+  }
+  .connect-action svg { width: 15px; height: 15px; }
+
+  .connect-status {
+    width: 100%;
+    margin-top: 20px;
+    padding-top: 18px;
+    border-top: 1px solid var(--line);
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+  }
+  .connect-status > i {
+    width: 7px;
+    height: 7px;
+    margin-top: 5px;
+    flex: 0 0 7px;
+    border-radius: 50%;
+    background: var(--faint);
+  }
+  .connect-status > i.is-waiting { background: var(--lime); animation: ping-dot 1.7s infinite; }
+  .connect-status span { min-width: 0; }
+  .connect-status strong {
+    display: block;
+    font: 500 12px/1.2 var(--font-sans);
+    color: var(--secondary-foreground);
+  }
+  .connect-status small {
+    display: block;
+    margin-top: 4px;
+    font: 400 11.5px/1.45 var(--font-sans);
+    color: var(--muted-foreground);
+  }
+  .connect-retry {
+    margin: 14px 0 0 17px;
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    border: 0;
+    background: none;
+    color: var(--lime);
+    font: 500 11.5px/1 var(--font-sans);
+  }
+  .connect-retry svg { width: 13px; height: 13px; }
+  .connect-footer {
+    padding: 14px 20px 18px;
+    font: 400 9.5px/1.4 var(--font-mono);
+    letter-spacing: 0.04em;
+    color: var(--faint);
+    text-align: center;
   }
 
   /* ---------- app shells ---------- */

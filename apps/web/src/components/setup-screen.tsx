@@ -3,7 +3,7 @@ import { CheckIcon, ChevronLeftIcon, ChevronRightIcon } from "lucide-react";
 import { toast } from "sonner";
 import type { DraftConfig, PublicDraft } from "@imperium/domain";
 
-import { api, setDemoIdentity } from "@/lib/api";
+import { api, getAuthMode, setDemoIdentity } from "@/lib/api";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Field, FieldContent, FieldDescription, FieldLabel } from "@/components/ui/field";
 import { cn } from "@/lib/utils";
@@ -26,8 +26,9 @@ export function SetupScreen({
   const [bansEnabled, setBansEnabled] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const channelLaunch = Boolean(telegramLaunchToken);
-  const telegramAvailable = channelLaunch || (typeof window !== "undefined" && Boolean(window.Telegram?.WebApp.initData));
+  const telegramAvailable = channelLaunch || (typeof window !== "undefined" && getAuthMode() !== "demo");
   const [notifyChannel, setNotifyChannel] = useState(telegramAvailable);
+  const [notificationTarget, setNotificationTarget] = useState<"group" | "channel">("group");
   const activePlayers = players.slice(0, playerCount);
   const minimumFactionCount = bansEnabled ? playerCount * 2 : playerCount;
 
@@ -55,7 +56,9 @@ export function SetupScreen({
     }
     setSubmitting(true);
     try {
-      setDemoIdentity({ id: "creator", name: activePlayers[0]!.trim() });
+      if (getAuthMode() === "demo") {
+        setDemoIdentity({ id: "creator", name: activePlayers[0]!.trim() });
+      }
       const config: DraftConfig = {
         playerCount,
         sliceCount: 9,
@@ -83,23 +86,25 @@ export function SetupScreen({
       let channelPickerRequested = false;
       if (notifyChannel && !telegramLaunchToken) {
         try {
-          await api.requestTelegramGroup(draft.slug);
+          await api.requestTelegramChat(draft.slug, notificationTarget);
           channelPickerRequested = true;
         } catch (error) {
           toast.warning(
             error instanceof Error
-              ? `Draft created, but the group picker could not open: ${error.message}`
-              : "Draft created, but the group picker could not open.",
+              ? `Draft created, but the ${notificationTarget} picker could not open: ${error.message}`
+              : `Draft created, but the ${notificationTarget} picker could not open.`,
           );
         }
       }
       const creatorPlayer = draft.players.find((player) => player.isCurrentUser);
-      if (creatorPlayer) localStorage.setItem("imperium-demo-creator-player", creatorPlayer.id);
+      if (creatorPlayer && getAuthMode() === "demo") {
+        localStorage.setItem("imperium-demo-creator-player", creatorPlayer.id);
+      }
       toast.success(
         telegramLaunchToken
           ? "Draft created · group connected"
           : channelPickerRequested
-          ? "Draft created · close the Mini App to choose the group"
+          ? `Draft created · choose the ${notificationTarget} in Telegram`
           : "Pool generated · 9 slices",
       );
       onCreated(draft);
@@ -371,16 +376,32 @@ export function SetupScreen({
               onCheckedChange={setNotifyChannel}
             />
             <FieldContent>
-              <FieldLabel htmlFor="notify-telegram-channel">Post every action to a group</FieldLabel>
+              <FieldLabel htmlFor="notify-telegram-channel">Post every action to a group or channel</FieldLabel>
               <FieldDescription>
                 {channelLaunch
                   ? "This draft will be connected to the group where /newdraft was sent after Telegram verifies that you and the bot are administrators there."
                   : telegramAvailable
-                  ? "After generation, Telegram sends a secure picker containing only groups you administer. The bot receives administrator access."
-                  : "Open this form from the Telegram Mini App to choose a notification group."}
+                  ? `After generation, Telegram sends a secure picker containing only ${notificationTarget}s you administer.`
+                  : "Connect this browser to Telegram to choose a notification group or channel."}
               </FieldDescription>
             </FieldContent>
           </Field>
+          {telegramAvailable && !channelLaunch && notifyChannel && (
+            <div className="count-grid" role="group" aria-label="Telegram notification destination" style={{ marginTop: 10 }}>
+              {(["group", "channel"] as const).map((target) => (
+                <button
+                  key={target}
+                  type="button"
+                  className={cn("count-chip", notificationTarget === target && "is-active")}
+                  aria-pressed={notificationTarget === target}
+                  onClick={() => setNotificationTarget(target)}
+                  style={{ height: 36, fontSize: 11, textTransform: "uppercase" }}
+                >
+                  {target}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
 
         <div className="hint-callout" style={{ margin: "10px 0 18px" }}>

@@ -4,6 +4,7 @@ import { afterAll, describe, expect, it, vi } from "vitest";
 import type { PublicDraft } from "@imperium/domain";
 
 import { app } from "./app.js";
+import { claimBrowserSession, hashBrowserSessionToken } from "./browser-session.js";
 import { env } from "./env.js";
 import { prisma } from "./prisma.js";
 
@@ -275,6 +276,38 @@ describe.sequential("legacy draft compatibility", () => {
 
     expect(legacyDraft.version).toBe(activatedVersion);
     expect(legacyDraft.events.filter((event) => event.type === "DRAFT_STARTED")).toHaveLength(1);
+  });
+});
+
+describe.sequential("Telegram-linked browser sessions", () => {
+  const token = crypto.randomUUID().replaceAll("-", "");
+
+  it("links a pending browser session to the Telegram user and authenticates the same account", async () => {
+    const user = await prisma.user.create({
+      data: {
+        telegramId: `browser-${runId}`,
+        displayName: "Browser Admiral",
+        username: "browser_admiral",
+      },
+    });
+    await prisma.browserSession.create({
+      data: {
+        tokenHash: hashBrowserSessionToken(token),
+        expiresAt: new Date(Date.now() + 60_000),
+      },
+    });
+
+    await expect(claimBrowserSession(token, user.id)).resolves.toBe("linked");
+    const response = await app.request("/api/auth/me", {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      id: user.id,
+      displayName: "Browser Admiral",
+      username: "browser_admiral",
+      mode: "browser",
+    });
   });
 });
 

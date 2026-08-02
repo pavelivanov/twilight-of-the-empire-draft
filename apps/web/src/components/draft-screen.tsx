@@ -17,7 +17,7 @@ import {
   selectedOptionOf,
 } from "@/components/room-parts";
 import { SliceCard } from "@/components/slice-board";
-import { api, getDemoIdentity, setDemoIdentity } from "@/lib/api";
+import { api, getAuthMode, getDemoIdentity, setDemoIdentity } from "@/lib/api";
 import { factionMeta, techColorHex } from "@/lib/ti4-meta";
 import { cn } from "@/lib/utils";
 
@@ -199,7 +199,7 @@ export function DraftScreen({
     <main className="room-shell">
       <RoomTopbar title={draft.title} meta={headerMeta} onBack={onShowDrafts} onManage={() => setManageOpen(true)} />
 
-      {!window.Telegram?.WebApp.initData && (
+      {getAuthMode() === "demo" && (
         <div className="demo-rail">
           <span>Preview as</span>
           {draft.players.map((player) => (

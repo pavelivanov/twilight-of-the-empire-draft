@@ -24,7 +24,11 @@ import { env } from "./env.js";
 import { ApiError } from "./errors.js";
 import { prisma } from "./prisma.js";
 import { presentDraft } from "./presenter.js";
-import { miniAppLink, sendTelegramGroupPicker, verifyTelegramNotificationChatAccess } from "./telegram.js";
+import {
+  miniAppLink,
+  sendTelegramChatPicker,
+  verifyTelegramNotificationChatAccess,
+} from "./telegram.js";
 
 export const draftsRouter = new Hono<ApiEnvironment>();
 
@@ -96,7 +100,7 @@ async function verifyTelegramDraftLaunch(
     throw new ApiError(401, "INVALID_TELEGRAM_USER", "Telegram user identity is invalid");
   }
   try {
-    const chat = await verifyTelegramNotificationChatAccess(launch.telegramChatId, telegramUserId);
+    const chat = await verifyTelegramNotificationChatAccess(launch.telegramChatId, telegramUserId, "group");
     return {
       token,
       telegramChatId: launch.telegramChatId,
@@ -396,41 +400,46 @@ draftsRouter.get("/:draftId", async (context) => {
   return context.json(draft);
 });
 
-draftsRouter.post("/:draftId/telegram-channel-picker", async (context) => {
-  const actor = context.get("actor");
-  if (actor.isDemo) {
-    throw new ApiError(409, "TELEGRAM_REQUIRED", "Open the Mini App in Telegram to choose a group");
-  }
-  if (!env.BOT_TOKEN) {
-    throw new ApiError(503, "BOT_NOT_CONFIGURED", "Telegram group notifications are not configured");
-  }
-  const draftId = context.req.param("draftId");
-  const draft = await prisma.draft.findFirst({
-    where: { OR: [{ id: draftId }, { slug: draftId }] },
-    select: { id: true, title: true, creatorUserId: true },
-  });
-  if (!draft) throw new ApiError(404, "DRAFT_NOT_FOUND", "Draft not found");
-  if (draft.creatorUserId !== actor.userId) {
-    throw new ApiError(403, "CREATOR_REQUIRED", "Only the creator can choose the notification group");
-  }
-
-  const requestId = await reserveTelegramChannelRequest(draft.id);
-  try {
-    await sendTelegramGroupPicker(actor.telegramId, draft.title, requestId);
-  } catch (error) {
-    await prisma.draft.updateMany({
-      where: { id: draft.id, telegramChannelRequestId: requestId },
-      data: { telegramChannelRequestId: null },
+draftsRouter.post(
+  "/:draftId/telegram-channel-picker",
+  zValidator("json", z.object({ target: z.enum(["group", "channel"]).default("group") })),
+  async (context) => {
+    const actor = context.get("actor");
+    if (actor.isDemo) {
+      throw new ApiError(409, "TELEGRAM_REQUIRED", "Connect a Telegram account to choose a notification chat");
+    }
+    if (!env.BOT_TOKEN) {
+      throw new ApiError(503, "BOT_NOT_CONFIGURED", "Telegram chat notifications are not configured");
+    }
+    const draftId = context.req.param("draftId");
+    const { target } = context.req.valid("json");
+    const draft = await prisma.draft.findFirst({
+      where: { OR: [{ id: draftId }, { slug: draftId }] },
+      select: { id: true, title: true, creatorUserId: true },
     });
-    console.error("Could not send Telegram group picker", error);
-    throw new ApiError(
-      502,
-      "GROUP_PICKER_UNAVAILABLE",
-      "Could not open the group picker. Open the bot privately, press Start, and try again",
-    );
-  }
-  return context.json({ requested: true });
-});
+    if (!draft) throw new ApiError(404, "DRAFT_NOT_FOUND", "Draft not found");
+    if (draft.creatorUserId !== actor.userId) {
+      throw new ApiError(403, "CREATOR_REQUIRED", "Only the creator can choose the notification chat");
+    }
+
+    const requestId = await reserveTelegramChannelRequest(draft.id);
+    try {
+      await sendTelegramChatPicker(actor.telegramId, draft.title, requestId, target);
+    } catch (error) {
+      await prisma.draft.updateMany({
+        where: { id: draft.id, telegramChannelRequestId: requestId },
+        data: { telegramChannelRequestId: null },
+      });
+      console.error("Could not send Telegram chat picker", error);
+      throw new ApiError(
+        502,
+        "CHAT_PICKER_UNAVAILABLE",
+        `Could not open the ${target} picker. Open the bot privately, press Start, and try again`,
+      );
+    }
+    return context.json({ requested: true });
+  },
+);
 
 draftsRouter.delete("/:draftId", async (context) => {
   const actor = context.get("actor");

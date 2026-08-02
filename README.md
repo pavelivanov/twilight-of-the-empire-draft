@@ -1,6 +1,6 @@
 # Imperium Draft
 
-Imperium Draft is a Telegram-native Milty draft service for three- to six-player
+Imperium Draft is a Telegram-connected Milty draft service for three- to six-player
 Twilight Imperium Fourth Edition games.
 
 - The Telegram Mini App creates a draft, enrolls players, generates the option
@@ -8,6 +8,9 @@ Twilight Imperium Fourth Edition games.
 - The Telegram bot connects a players group to its
   draft, announces every accepted player/creator action, and calls out the next
   player.
+- The browser app links to the same Telegram identity through a one-time bot
+  confirmation, exposes the complete Mini App workflow, and can show native
+  activity and turn notifications while the app is open.
 - The Hono API and PostgreSQL database verify identity, enforce draft rules,
   retain immutable history, and deliver bot notifications through a retryable
   outbox.
@@ -35,9 +38,10 @@ npm run db:migrate
 npm run dev
 ```
 
-Open the Vite URL printed in the terminal. Outside Telegram,
-`ALLOW_DEMO_AUTH=true` enables the local identity switcher used to claim seats
-and exercise the full draft.
+Open the Vite URL printed in the terminal. In production, an ordinary browser
+offers a secure Telegram bot link and keeps the resulting browser session for
+30 days. Locally, `ALLOW_DEMO_AUTH=true` enables the identity switcher used to
+claim seats and exercise the full draft without a configured bot.
 
 The initial migration is committed, so a fresh checkout may use the
 non-interactive deployment command instead:
@@ -129,6 +133,10 @@ npm run telegram:webhook
 5. Each player opens the Mini App invite and claims their named seat.
 6. Every accepted claim, release, removal, pool regeneration, ban, pick, undo,
    and draft deletion should produce a group message.
+7. Open the deployed web URL in a browser, confirm the one-time link in the bot,
+   and verify that the same drafts, seat, and host permissions appear. A host can
+   optionally connect either an administered group or channel from draft setup
+   or **Manage draft**. Browser alerts are opt-in under **This browser**.
 
 The Bot API does not expose a group-membership list to Mini Apps. The setup form
 therefore triggers Telegram's native filtered chat picker; Telegram renders the
