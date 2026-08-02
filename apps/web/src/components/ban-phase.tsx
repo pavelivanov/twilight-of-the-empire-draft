@@ -98,7 +98,8 @@ export function BanPhaseView({
   const ctaEnabled = Boolean(banPlayer && !playerBan && selected && !busy);
 
   return (
-    <div style={{ position: "relative", minHeight: "100%" }}>
+    <div className="ban-layout">
+      <div className="ban-rail">
       <div className="ban-head">
         <div className="ban-kicker">
           <i aria-hidden="true" />
@@ -130,7 +131,14 @@ export function BanPhaseView({
         </div>
       </div>
 
-      <div style={{ padding: "12px 16px 96px" }}>
+      <div className="confirm-dock ban-dock">
+        <button type="button" className="btn-accent" disabled={!ctaEnabled} onClick={() => void lockBan()}>
+          {ctaLabel}
+        </button>
+      </div>
+      </div>
+
+      <div className="ban-pool">
         <div className="ban-grid">
           {factionOptions.map((option) => {
             const faction = option.payload as unknown as Faction;
@@ -166,12 +174,6 @@ export function BanPhaseView({
             );
           })}
         </div>
-      </div>
-
-      <div className="confirm-dock">
-        <button type="button" className="btn-accent" disabled={!ctaEnabled} onClick={() => void lockBan()}>
-          {ctaLabel}
-        </button>
       </div>
     </div>
   );

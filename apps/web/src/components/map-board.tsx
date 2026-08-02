@@ -48,11 +48,21 @@ type WedgeTile = {
   playerName?: string;
 };
 
-export function MapBoard({ draft }: { draft: PublicDraft }) {
-  const [zoom, setZoom] = useState(1.2);
-  const isComplete = draft.status === "COMPLETE" || draft.turnCursor >= draft.totalTurns;
+export type MapModel = {
+  wedgeByCoordinate: Map<string, WedgeTile>;
+  placedCount: number;
+  legend: Array<{
+    id: string;
+    n: string;
+    color?: string;
+    player: string;
+    slice: string;
+    open: boolean;
+  }>;
+};
 
-  const { wedgeByCoordinate, placedCount, legend } = useMemo(() => {
+export function useMapModel(draft: PublicDraft): MapModel {
+  return useMemo(() => {
     const byCoordinate = new Map<string, WedgeTile>();
     const layoutIndexes =
       seatLayoutIndexes[draft.players.length] ?? seatLayoutIndexes[6]!;
@@ -95,8 +105,64 @@ export function MapBoard({ draft }: { draft: PublicDraft }) {
     });
     return { wedgeByCoordinate: byCoordinate, placedCount: placed, legend: legendRows };
   }, [draft]);
+}
 
+export function MapStage({
+  model,
+  zoom,
+  className,
+}: {
+  model: MapModel;
+  zoom: number;
+  className?: string;
+}) {
   const cells = useMemo(gridCells, []);
+  return (
+    <div className={cn("map-stage", className)}>
+      <div className="map-scaler" style={{ "--map-zoom": zoom } as React.CSSProperties}>
+        <div className="map-board" style={{ width: BOARD_WIDTH, height: BOARD_HEIGHT }}>
+          {cells.map((cell) => {
+            const isCenter = cell.ring === 0;
+            const wedge = model.wedgeByCoordinate.get(`${cell.q},${cell.r}`);
+            const hasArt = isCenter || Boolean(wedge?.tileId);
+            const fill = isCenter ? "#4a4535" : (wedge?.color ?? "#1a2028");
+            return (
+              <span
+                key={`${cell.q},${cell.r}`}
+                className="map-hex"
+                style={{ left: cell.left, top: cell.top, width: TILE_WIDTH, height: TILE_HEIGHT }}
+              >
+                <i className="map-hex-fill" style={{ background: fill }} />
+                <span className="map-hex-inner">
+                  {hasArt && <img src={tileArt(isCenter ? 18 : wedge!.tileId!)} alt="" draggable={false} />}
+                  {wedge?.home && (
+                    <>
+                      <span
+                        className="map-hex-label"
+                        style={wedge.color ? { color: wedge.color } : undefined}
+                      >
+                        {wedge.playerName ?? `SEAT ${wedge.seatNumber}`}
+                      </span>
+                      <span className="map-hex-val" style={wedge.color ? { color: wedge.color } : undefined}>
+                        {wedge.playerName ? `#${wedge.seatNumber}` : "—"}
+                      </span>
+                    </>
+                  )}
+                </span>
+              </span>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export function MapBoard({ draft }: { draft: PublicDraft }) {
+  const [zoom, setZoom] = useState(1.2);
+  const isComplete = draft.status === "COMPLETE" || draft.turnCursor >= draft.totalTurns;
+  const model = useMapModel(draft);
+  const { placedCount, legend } = model;
 
   return (
     <div>
@@ -129,42 +195,8 @@ export function MapBoard({ draft }: { draft: PublicDraft }) {
         </div>
       </div>
 
-      <div className="map-stage">
-        <div className="map-scaler" style={{ "--map-zoom": zoom } as React.CSSProperties}>
-          <div className="map-board" style={{ width: BOARD_WIDTH, height: BOARD_HEIGHT }}>
-            {cells.map((cell) => {
-              const isCenter = cell.ring === 0;
-              const wedge = wedgeByCoordinate.get(`${cell.q},${cell.r}`);
-              const hasArt = isCenter || Boolean(wedge?.tileId);
-              const fill = isCenter ? "#4a4535" : (wedge?.color ?? "#1a2028");
-              return (
-                <span
-                  key={`${cell.q},${cell.r}`}
-                  className="map-hex"
-                  style={{ left: cell.left, top: cell.top, width: TILE_WIDTH, height: TILE_HEIGHT }}
-                >
-                  <i className="map-hex-fill" style={{ background: fill }} />
-                  <span className="map-hex-inner">
-                    {hasArt && <img src={tileArt(isCenter ? 18 : wedge!.tileId!)} alt="" draggable={false} />}
-                    {wedge?.home && (
-                      <>
-                        <span
-                          className="map-hex-label"
-                          style={wedge.color ? { color: wedge.color } : undefined}
-                        >
-                          {wedge.playerName ?? `SEAT ${wedge.seatNumber}`}
-                        </span>
-                        <span className="map-hex-val" style={wedge.color ? { color: wedge.color } : undefined}>
-                          {wedge.playerName ? `#${wedge.seatNumber}` : "—"}
-                        </span>
-                      </>
-                    )}
-                  </span>
-                </span>
-              );
-            })}
-          </div>
-        </div>
+      <div style={{ position: "relative" }}>
+        <MapStage model={model} zoom={zoom} />
         <button type="button" className="map-center-btn" onClick={() => setZoom(1.2)}>
           CENTER
         </button>

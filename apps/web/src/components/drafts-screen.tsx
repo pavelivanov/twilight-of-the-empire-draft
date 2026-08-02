@@ -94,6 +94,15 @@ export function DraftsScreen({
   const live = drafts?.filter((draft) => isLiveDraftStatus(draft.status)) ?? [];
   const archive = drafts?.filter((draft) => isArchivedDraftStatus(draft.status)) ?? [];
 
+  const heroSub =
+    drafts === undefined
+      ? ""
+      : live.length === 0
+        ? "No live tables right now. Start one and share the link."
+        : `${live.length === 1 ? "One table is" : `${live.length} tables are`} live.${
+            archive.length ? ` ${archive.length} in the archive.` : ""
+          }`;
+
   return (
     <main className="app-shell">
       <header className="list-topbar">
@@ -104,12 +113,23 @@ export function DraftsScreen({
               Return to draft
             </button>
           )}
-          <button type="button" className="btn-accent is-sm" onClick={onNew}>
+          <button type="button" className="btn-accent is-sm mb-only" onClick={onNew}>
             <PlusIcon aria-hidden="true" />
             New draft
           </button>
         </div>
       </header>
+
+      <div className="list-hero dk-only">
+        <div>
+          <h1>Your drafts</h1>
+          <p>{heroSub}</p>
+        </div>
+        <button type="button" className="btn-accent" onClick={onNew}>
+          <PlusIcon aria-hidden="true" />
+          New draft
+        </button>
+      </div>
 
       {drafts === undefined ? (
         <div style={{ padding: "16px" }}>
@@ -125,7 +145,7 @@ export function DraftsScreen({
               <div className="mono-label" style={{ marginBottom: 11 }}>
                 LIVE TABLES · {live.length}
               </div>
-              <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
+              <div className="list-live-grid">
                 {live.map((draft) => {
                   const isSetup = draft.status === "SETUP";
                   const isBanning = draft.status === "BANNING";

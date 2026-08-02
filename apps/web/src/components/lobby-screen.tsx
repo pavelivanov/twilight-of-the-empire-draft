@@ -2,6 +2,7 @@ import { useState } from "react";
 import { toast } from "sonner";
 import type { PublicDraft } from "@imperium/domain";
 
+import { DesktopLobby, DesktopManagePopover, DesktopRoomTopbar } from "@/components/desktop-room";
 import { DraftActivity } from "@/components/draft-activity";
 import { DraftNavigation, type DraftView } from "@/components/draft-navigation";
 import { MapBoard } from "@/components/map-board";
@@ -9,6 +10,7 @@ import { ManageSheet, RoomTopbar, TableView } from "@/components/room-parts";
 import { SliceCard } from "@/components/slice-board";
 import { SliceSheet } from "@/components/room-parts";
 import { api, getAuthMode, getDemoIdentity, setDemoIdentity } from "@/lib/api";
+import { useIsDesktop } from "@/lib/use-media";
 
 export function LobbyScreen({
   draft,
@@ -26,6 +28,7 @@ export function LobbyScreen({
   const [manageOpen, setManageOpen] = useState(false);
   const [sheetSliceId, setSheetSliceId] = useState<string>();
   const [busy, setBusy] = useState(false);
+  const isDesktop = useIsDesktop();
   const claimed = draft.players.filter((player) => player.isClaimed).length;
   const slices = draft.options
     .filter((option) => option.kind === "SLICE")
@@ -49,6 +52,43 @@ export function LobbyScreen({
     const creatorPlayerId = localStorage.getItem("imperium-demo-creator-player");
     setDemoIdentity({ id: playerId === creatorPlayerId ? "creator" : playerId, name });
     onDraft(await api.getDraft(draft.slug));
+  }
+
+  if (isDesktop) {
+    return (
+      <main className="dk-shell">
+        <DesktopRoomTopbar
+          draft={draft}
+          onShowDrafts={onShowDrafts}
+          manageOpen={manageOpen}
+          onToggleManage={() => setManageOpen((value) => !value)}
+        />
+        {getAuthMode() === "demo" && (
+          <div className="demo-rail">
+            <span>Preview as</span>
+            {draft.players.map((player) => (
+              <button
+                key={player.id}
+                type="button"
+                className={player.isCurrentUser ? "is-active" : ""}
+                onClick={() => void previewAs(player.id, player.displayName)}
+              >
+                {player.displayName}
+              </button>
+            ))}
+            <span style={{ marginLeft: "auto" }}>{getDemoIdentity().name}</span>
+          </div>
+        )}
+        <DesktopLobby draft={draft} onDraft={onDraft} />
+        <DesktopManagePopover
+          draft={draft}
+          open={manageOpen}
+          onClose={() => setManageOpen(false)}
+          onDraft={onDraft}
+          onDeleted={onShowDrafts}
+        />
+      </main>
+    );
   }
 
   return (

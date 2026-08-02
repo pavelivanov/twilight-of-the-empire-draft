@@ -1,8 +1,10 @@
-import type { PublicOption, Slice } from "@imperium/domain";
+import type { Faction, Position, PublicOption, Slice } from "@imperium/domain";
 
 import {
   clusterLayout,
+  factionMeta,
   sliceDetails,
+  techColorHex,
   techIcon,
   tileArt,
   traitIcon,
@@ -113,6 +115,79 @@ export function MarkChips({ details, large }: { details: SliceDetails; large?: b
         </span>
       ))}
     </>
+  );
+}
+
+export function FactionCard({
+  option,
+  takenBy,
+  selected,
+  onSelect,
+}: {
+  option: PublicOption;
+  takenBy?: string;
+  selected?: boolean;
+  onSelect?: () => void;
+}) {
+  const faction = option.payload as unknown as Faction;
+  const meta = factionMeta[faction.id];
+  const taken = Boolean(option.selectedByPlayerId);
+  const banned = Boolean(option.bannedByPlayerId);
+  return (
+    <button
+      type="button"
+      className={cn("faction-card", (taken || banned) && "is-dim", selected && "is-selected")}
+      onClick={onSelect}
+    >
+      <span className="crest">{faction.shortName.slice(0, 2).toUpperCase()}</span>
+      <span className="faction-card-main">
+        <strong className={cn(banned && "is-struck")}>{faction.name}</strong>
+        <span className="faction-card-sub">
+          <span className="tech-dots">
+            {(meta?.techs ?? []).map((tech, index) => (
+              <i key={index} style={{ background: techColorHex[tech] }} />
+            ))}
+          </span>
+          <em>{meta?.meta ?? faction.trait}</em>
+        </span>
+      </span>
+      <span
+        className={cn("state-tag", banned ? "state-banned" : taken ? "state-taken" : "state-available")}
+      >
+        {banned ? "BANNED" : taken ? (takenBy ?? "Taken").toUpperCase() : "AVAILABLE"}
+      </span>
+    </button>
+  );
+}
+
+export function SeatCard({
+  option,
+  takenBy,
+  selected,
+  onSelect,
+}: {
+  option: PublicOption;
+  takenBy?: string;
+  selected?: boolean;
+  onSelect?: () => void;
+}) {
+  const position = option.payload as unknown as Position;
+  const taken = Boolean(option.selectedByPlayerId);
+  return (
+    <button
+      type="button"
+      className={cn("seat-card", taken && "is-dim", selected && "is-selected")}
+      onClick={onSelect}
+    >
+      <span className="seat-num">{option.sortOrder + 1}</span>
+      <span className="seat-card-main">
+        <strong>{position.label}</strong>
+        <small>{position.description}</small>
+      </span>
+      <span className={cn("state-tag", taken ? "state-taken" : "state-available")}>
+        {taken ? (takenBy ?? "Taken").toUpperCase() : "AVAILABLE"}
+      </span>
+    </button>
   );
 }
 

@@ -110,21 +110,23 @@ function App() {
     };
   }, [authStatus, browserSession]);
 
-  const acceptDraft = useCallback((nextDraft: PublicDraft, resetView = false) => {
+  const acceptDraft = useCallback((nextDraft: PublicDraft, resetView = false, navigate = true) => {
     notifyBrowserOfDraftUpdate(latestDraft.current, nextDraft);
     latestDraft.current = nextDraft;
     const previousStatus = draftStatus.current;
     draftStatus.current = nextDraft.status;
     setDraft(nextDraft);
-    setScreen("draft");
+    if (navigate) setScreen("draft");
     if (resetView) setDraftView(nextDraft.status === "SETUP" ? "table" : "draft");
     else if (previousStatus === "SETUP" && nextDraft.status !== "SETUP") setDraftView("draft");
     localStorage.setItem("imperium-last-draft", nextDraft.slug);
-    const url = new URL(window.location.href);
-    url.searchParams.set("draft", nextDraft.slug);
-    url.searchParams.delete("channelLaunch");
-    url.searchParams.delete("groupLaunch");
-    window.history.replaceState({}, "", url);
+    if (navigate) {
+      const url = new URL(window.location.href);
+      url.searchParams.set("draft", nextDraft.slug);
+      url.searchParams.delete("channelLaunch");
+      url.searchParams.delete("groupLaunch");
+      window.history.replaceState({}, "", url);
+    }
   }, []);
 
   useEffect(() => {
@@ -152,7 +154,10 @@ function App() {
   useEffect(() => {
     if (authStatus !== "ready" || !draft || draft.status === "COMPLETE") return;
     const timer = window.setInterval(() => {
-      api.getDraft(draft.slug).then(acceptDraft).catch(() => undefined);
+      api
+        .getDraft(draft.slug)
+        .then((value) => acceptDraft(value, false, false))
+        .catch(() => undefined);
     }, 5_000);
     return () => window.clearInterval(timer);
   }, [acceptDraft, authStatus, draft]);

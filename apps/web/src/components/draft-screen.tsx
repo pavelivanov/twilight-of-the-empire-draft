@@ -4,6 +4,12 @@ import { toast } from "sonner";
 import type { Faction, Position, PublicDraft, PublicOption } from "@imperium/domain";
 
 import { BanPhaseView, banLockedCount } from "@/components/ban-phase";
+import {
+  DesktopDraftRoom,
+  DesktopManagePopover,
+  DesktopRoomTopbar,
+  type DesktopDraftController,
+} from "@/components/desktop-room";
 import { DraftActivity } from "@/components/draft-activity";
 import { DraftNavigation, resolveDraftView, type DraftView } from "@/components/draft-navigation";
 import { MapBoard } from "@/components/map-board";
@@ -16,9 +22,9 @@ import {
   TurnStrip,
   selectedOptionOf,
 } from "@/components/room-parts";
-import { SliceCard } from "@/components/slice-board";
+import { FactionCard, SeatCard, SliceCard } from "@/components/slice-board";
 import { api, getAuthMode, getDemoIdentity, setDemoIdentity } from "@/lib/api";
-import { factionMeta, techColorHex } from "@/lib/ti4-meta";
+import { useIsDesktop } from "@/lib/use-media";
 import { cn } from "@/lib/utils";
 
 type Segment = "slices" | "factions" | "seats";
@@ -194,6 +200,88 @@ export function DraftScreen({
     { segment: "seats", kicker: "SEAT", pick: boardSeat },
   ];
   const lockedCount = boardSlots.filter((slot) => slot.pick).length;
+  const boardOwnerLabel = isManagingTurn
+    ? `${activePlayer?.displayName.toUpperCase()}'S BOARD`
+    : "YOUR BOARD";
+
+  const isDesktop = useIsDesktop();
+  if (isDesktop) {
+    const controller: DesktopDraftController = {
+      draft,
+      segment,
+      setSegment,
+      sort,
+      toggleSort: () => setSort((value) => (value === "num" ? "opt" : "num")),
+      factionFilter,
+      setFactionFilter,
+      sortedSlices,
+      filteredFactions,
+      seatOptions: options.POSITION,
+      factionTotal: options.FACTION.length,
+      availableCount,
+      bannedCount,
+      boardSlots,
+      lockedCount,
+      boardOwnerLabel,
+      isComplete,
+      busy,
+      setBusy,
+      onDraft,
+      playerName,
+      commitPick,
+      tapOption,
+      selectedOption,
+      clearSelection: () => setSelectedOptionId(undefined),
+      selectedOptionId,
+      isManagingTurn,
+      activePlayerName: activePlayer?.displayName,
+      sheetSliceId,
+      setSheetSliceId,
+      sheetOption,
+      sheetCanTake: Boolean(sheetOption) && sheetGuard === null,
+      sheetTakeLabel,
+    };
+    return (
+      <main className="dk-shell">
+        <DesktopRoomTopbar
+          draft={draft}
+          onShowDrafts={onShowDrafts}
+          manageOpen={manageOpen}
+          onToggleManage={() => setManageOpen((value) => !value)}
+        />
+        {getAuthMode() === "demo" && (
+          <div className="demo-rail">
+            <span>Preview as</span>
+            {draft.players.map((player) => (
+              <button
+                key={player.id}
+                type="button"
+                className={player.isCurrentUser ? "is-active" : ""}
+                onClick={() => void previewAs(player.id, player.displayName)}
+              >
+                {player.displayName}
+              </button>
+            ))}
+            <span style={{ marginLeft: "auto" }}>{getDemoIdentity().name}</span>
+          </div>
+        )}
+        {isBanning ? (
+          <div className="dk-scroll">
+            <BanPhaseView draft={draft} onDraft={onDraft} />
+          </div>
+        ) : (
+          <DesktopDraftRoom controller={controller} />
+        )}
+        <DesktopManagePopover
+          draft={draft}
+          open={manageOpen}
+          onClose={() => setManageOpen(false)}
+          onDraft={onDraft}
+          onDeleted={onShowDrafts}
+        />
+      </main>
+    );
+  }
 
   return (
     <main className="room-shell">
@@ -316,45 +404,15 @@ export function DraftScreen({
                   ))}
                 </div>
                 <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
-                  {filteredFactions.map((option) => {
-                    const faction = option.payload as unknown as Faction;
-                    const meta = factionMeta[faction.id];
-                    const taken = Boolean(option.selectedByPlayerId);
-                    const banned = Boolean(option.bannedByPlayerId);
-                    return (
-                      <button
-                        key={option.id}
-                        type="button"
-                        className={cn(
-                          "faction-card",
-                          (taken || banned) && "is-dim",
-                          selectedOptionId === option.id && "is-selected",
-                        )}
-                        onClick={() => tapOption(option)}
-                      >
-                        <span className="crest">{faction.shortName.slice(0, 2).toUpperCase()}</span>
-                        <span className="faction-card-main">
-                          <strong className={cn(banned && "is-struck")}>{faction.name}</strong>
-                          <span className="faction-card-sub">
-                            <span className="tech-dots">
-                              {(meta?.techs ?? []).map((tech, index) => (
-                                <i key={index} style={{ background: techColorHex[tech] }} />
-                              ))}
-                            </span>
-                            <em>{meta?.meta ?? faction.trait}</em>
-                          </span>
-                        </span>
-                        <span
-                          className={cn(
-                            "state-tag",
-                            banned ? "state-banned" : taken ? "state-taken" : "state-available",
-                          )}
-                        >
-                          {banned ? "BANNED" : taken ? playerName(option.selectedByPlayerId)?.toUpperCase() : "AVAILABLE"}
-                        </span>
-                      </button>
-                    );
-                  })}
+                  {filteredFactions.map((option) => (
+                    <FactionCard
+                      key={option.id}
+                      option={option}
+                      takenBy={playerName(option.selectedByPlayerId)}
+                      selected={selectedOptionId === option.id}
+                      onSelect={() => tapOption(option)}
+                    />
+                  ))}
                 </div>
               </div>
             )}
@@ -372,27 +430,15 @@ export function DraftScreen({
                   Seat = position in speaker order for round one. Lower is earlier.
                 </p>
                 <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
-                  {options.POSITION.map((option) => {
-                    const position = option.payload as unknown as Position;
-                    const taken = Boolean(option.selectedByPlayerId);
-                    return (
-                      <button
-                        key={option.id}
-                        type="button"
-                        className={cn("seat-card", taken && "is-dim", selectedOptionId === option.id && "is-selected")}
-                        onClick={() => tapOption(option)}
-                      >
-                        <span className="seat-num">{option.sortOrder + 1}</span>
-                        <span className="seat-card-main">
-                          <strong>{position.label}</strong>
-                          <small>{position.description}</small>
-                        </span>
-                        <span className={cn("state-tag", taken ? "state-taken" : "state-available")}>
-                          {taken ? playerName(option.selectedByPlayerId)?.toUpperCase() : "AVAILABLE"}
-                        </span>
-                      </button>
-                    );
-                  })}
+                  {options.POSITION.map((option) => (
+                    <SeatCard
+                      key={option.id}
+                      option={option}
+                      takenBy={playerName(option.selectedByPlayerId)}
+                      selected={selectedOptionId === option.id}
+                      onSelect={() => tapOption(option)}
+                    />
+                  ))}
                 </div>
               </div>
             )}

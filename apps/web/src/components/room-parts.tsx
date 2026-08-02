@@ -138,14 +138,19 @@ export function RoomTopbar({
   );
 }
 
-export function TurnStrip({
-  draft,
-  onOpenOrder,
-}: {
-  draft: PublicDraft;
-  onOpenOrder: () => void;
-}) {
-  const order = useTurnOrder(draft);
+export type TurnStatus = {
+  done: boolean;
+  isMyTurn: boolean;
+  isManagingTurn: boolean;
+  kicker: string;
+  sub: string;
+  picksByPlayer: Map<string, number>;
+};
+
+export function computeTurnStatus(
+  draft: PublicDraft,
+  { mapAlwaysVisible = false }: { mapAlwaysVisible?: boolean } = {},
+): TurnStatus {
   const done = draft.status === "COMPLETE" || draft.turnCursor >= draft.totalTurns;
   const activePlayer = draft.players.find((player) => player.id === draft.activePlayerId);
   const currentPlayer = draft.players.find((player) => player.isCurrentUser);
@@ -170,7 +175,9 @@ export function TurnStrip({
           ? `WAITING ON ${activePlayer.displayName.toUpperCase()}`
           : "WAITING";
   const sub = done
-    ? "Every seat is filled — open the map."
+    ? mapAlwaysVisible
+      ? "Every seat is filled — the map is final."
+      : "Every seat is filled — open the map."
     : isMyTurn
       ? need.length === 1
         ? `Last one to take: ${need[0]}`
@@ -193,6 +200,18 @@ export function TurnStrip({
       picksByPlayer.set(option.selectedByPlayerId, (picksByPlayer.get(option.selectedByPlayerId) ?? 0) + 1);
     }
   }
+  return { done, isMyTurn, isManagingTurn, kicker, sub, picksByPlayer };
+}
+
+export function TurnStrip({
+  draft,
+  onOpenOrder,
+}: {
+  draft: PublicDraft;
+  onOpenOrder: () => void;
+}) {
+  const order = useTurnOrder(draft);
+  const { done, isMyTurn, isManagingTurn, kicker, sub, picksByPlayer } = computeTurnStatus(draft);
 
   return (
     <section className={cn("turn-strip", (isMyTurn || isManagingTurn) && !done && "is-mine", done && "is-done")}>
@@ -230,32 +249,24 @@ export function TurnStrip({
   );
 }
 
-/* ---------- table view ---------- */
+/* ---------- seat claiming ---------- */
 
-export function TableView({
-  draft,
-  onDraft,
-  busy,
-  setBusy,
-}: {
-  draft: PublicDraft;
-  onDraft: (draft: PublicDraft) => void;
-  busy: boolean;
-  setBusy: (value: boolean) => void;
-}) {
-  const [pending, setPending] = useState<{ kind: "claim" | "release"; player: PublicPlayer }>();
+export type SeatPending = { kind: "claim" | "release"; player: PublicPlayer };
+
+/** Seat claim/release rules and confirmation state, shared by every layout. */
+export function useSeatClaim(
+  draft: PublicDraft,
+  onDraft: (draft: PublicDraft) => void,
+  setBusy: (value: boolean) => void,
+) {
+  const [pending, setPending] = useState<SeatPending>();
   const currentPlayer = draft.players.find((player) => player.isCurrentUser);
-  const claimed = draft.players.filter((player) => player.isClaimed).length;
   const canClaim = draft.status !== "ARCHIVED";
   const canRelease =
     draft.turnCursor === 0 &&
     draft.status !== "COMPLETE" &&
     draft.status !== "ARCHIVED" &&
     draft.options.every((option) => !option.selectedByPlayerId && !option.bannedByPlayerId);
-
-  const mySlice = currentPlayer ? selectedOptionOf(draft, currentPlayer.id, "SLICE") : undefined;
-  const myFaction = currentPlayer ? selectedOptionOf(draft, currentPlayer.id, "FACTION") : undefined;
-  const mySeat = currentPlayer ? selectedOptionOf(draft, currentPlayer.id, "POSITION") : undefined;
 
   async function confirmPending() {
     if (!pending) return;
@@ -279,6 +290,75 @@ export function TableView({
       setBusy(false);
     }
   }
+
+  function claimableBy(player: PublicPlayer): boolean {
+    return canClaim && !player.isClaimed && !currentPlayer;
+  }
+
+  return { pending, setPending, confirmPending, canClaim, canRelease, currentPlayer, claimableBy };
+}
+
+export function SeatClaimDialog({
+  pending,
+  busy,
+  onOpenChange,
+  onConfirm,
+}: {
+  pending?: SeatPending;
+  busy: boolean;
+  onOpenChange: (open: boolean) => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <AlertDialog open={Boolean(pending)} onOpenChange={onOpenChange}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>
+            {pending?.kind === "claim"
+              ? `Take ${pending.player.displayName}'s seat?`
+              : `Leave ${pending?.player.displayName}?`}
+          </AlertDialogTitle>
+          <AlertDialogDescription>
+            {pending?.kind === "claim"
+              ? "This name will represent you for the whole draft."
+              : "The seat becomes available for another player to claim."}
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel disabled={busy}>Cancel</AlertDialogCancel>
+          <AlertDialogAction
+            variant={pending?.kind === "claim" ? "default" : "destructive"}
+            disabled={busy}
+            onClick={onConfirm}
+          >
+            {pending?.kind === "claim" ? "Confirm seat" : "Leave seat"}
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  );
+}
+
+/* ---------- table view ---------- */
+
+export function TableView({
+  draft,
+  onDraft,
+  busy,
+  setBusy,
+}: {
+  draft: PublicDraft;
+  onDraft: (draft: PublicDraft) => void;
+  busy: boolean;
+  setBusy: (value: boolean) => void;
+}) {
+  const { pending, setPending, confirmPending, canClaim, canRelease, currentPlayer, claimableBy } =
+    useSeatClaim(draft, onDraft, setBusy);
+  const claimed = draft.players.filter((player) => player.isClaimed).length;
+
+  const mySlice = currentPlayer ? selectedOptionOf(draft, currentPlayer.id, "SLICE") : undefined;
+  const myFaction = currentPlayer ? selectedOptionOf(draft, currentPlayer.id, "FACTION") : undefined;
+  const mySeat = currentPlayer ? selectedOptionOf(draft, currentPlayer.id, "POSITION") : undefined;
 
   return (
     <div style={{ padding: "14px 16px 24px" }}>
@@ -349,7 +429,7 @@ export function TableView({
       <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
         {draft.players.map((player) => {
           const isPicking = draft.status === "DRAFTING" && player.id === draft.activePlayerId;
-          const claimable = canClaim && !player.isClaimed && !currentPlayer;
+          const claimable = claimableBy(player);
           const tag = player.isCurrentUser
             ? { label: "YOU", className: "is-lime" }
             : isPicking
@@ -387,37 +467,14 @@ export function TableView({
         })}
       </div>
 
-      <AlertDialog
-        open={Boolean(pending)}
+      <SeatClaimDialog
+        pending={pending}
+        busy={busy}
         onOpenChange={(open) => {
           if (!open && !busy) setPending(undefined);
         }}
-      >
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>
-              {pending?.kind === "claim"
-                ? `Take ${pending.player.displayName}'s seat?`
-                : `Leave ${pending?.player.displayName}?`}
-            </AlertDialogTitle>
-            <AlertDialogDescription>
-              {pending?.kind === "claim"
-                ? "This name will represent you for the whole draft."
-                : "The seat becomes available for another player to claim."}
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel disabled={busy}>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              variant={pending?.kind === "claim" ? "default" : "destructive"}
-              disabled={busy}
-              onClick={() => void confirmPending()}
-            >
-              {pending?.kind === "claim" ? "Confirm seat" : "Leave seat"}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+        onConfirm={() => void confirmPending()}
+      />
     </div>
   );
 }
@@ -549,16 +606,18 @@ export function SliceSheet({
 
 /* ---------- draft order sheet ---------- */
 
-export function OrderSheet({
-  draft,
-  open,
-  onOpenChange,
-}: {
-  draft: PublicDraft;
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-}) {
-  const order = useTurnOrder(draft);
+export type OrderRound = {
+  label: string;
+  picks: Array<{
+    turn: number;
+    playerName: string;
+    isCurrent: boolean;
+    isPast: boolean;
+    result: string;
+  }>;
+};
+
+export function computeOrderRounds(draft: PublicDraft, order: readonly string[]): OrderRound[] {
   const playerCount = draft.players.length;
   const players = new Map(draft.players.map((player) => [player.id, player]));
   const selectedOptionIds = new Set(
@@ -581,6 +640,35 @@ export function OrderSheet({
     pickEventsByTurn.set(turnIndex, event);
     fallbackTurnIndex = Math.max(fallbackTurnIndex, turnIndex + 1);
   }
+  return [0, 1, 2].map((round) => ({
+    label: `ROUND ${round + 1}`,
+    picks: order.slice(round * playerCount, (round + 1) * playerCount).map((playerId, index) => {
+      const globalIndex = round * playerCount + index;
+      const isCurrent = draft.status === "DRAFTING" && globalIndex === draft.turnCursor;
+      const isPast = globalIndex < draft.turnCursor;
+      const event = pickEventsByTurn.get(globalIndex);
+      return {
+        turn: globalIndex + 1,
+        playerName: players.get(playerId)?.displayName ?? "—",
+        isCurrent,
+        isPast,
+        result: event ? String(event.payload.optionLabel ?? "") : isCurrent ? "picking now" : "upcoming",
+      };
+    }),
+  }));
+}
+
+export function OrderSheet({
+  draft,
+  open,
+  onOpenChange,
+}: {
+  draft: PublicDraft;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const order = useTurnOrder(draft);
+  const rounds = computeOrderRounds(draft, order);
 
   return (
     <Drawer open={open} onOpenChange={onOpenChange} showSwipeHandle>
@@ -590,30 +678,24 @@ export function OrderSheet({
           <p className="sheet-sub">
             Snake order, three rounds. Each turn you take exactly one of slice, faction or seat.
           </p>
-          {[0, 1, 2].map((round) => (
-            <div key={round} className="order-round">
-              <small>ROUND {round + 1}</small>
-              {order.slice(round * playerCount, (round + 1) * playerCount).map((playerId, index) => {
-                const globalIndex = round * playerCount + index;
-                const isCurrent = draft.status === "DRAFTING" && globalIndex === draft.turnCursor;
-                const isPast = globalIndex < draft.turnCursor;
-                const event = pickEventsByTurn.get(globalIndex);
-                return (
-                  <div
-                    key={globalIndex}
-                    className={cn(
-                      "order-pick-row",
-                      isCurrent && "is-current",
-                      isPast && "is-past",
-                      !isCurrent && !isPast && "is-upcoming",
-                    )}
-                  >
-                    <small>{globalIndex + 1}</small>
-                    <strong>{players.get(playerId)?.displayName ?? "—"}</strong>
-                    <em>{event ? String(event.payload.optionLabel ?? "") : isCurrent ? "picking now" : "upcoming"}</em>
-                  </div>
-                );
-              })}
+          {rounds.map((round) => (
+            <div key={round.label} className="order-round">
+              <small>{round.label}</small>
+              {round.picks.map((pick) => (
+                <div
+                  key={pick.turn}
+                  className={cn(
+                    "order-pick-row",
+                    pick.isCurrent && "is-current",
+                    pick.isPast && "is-past",
+                    !pick.isCurrent && !pick.isPast && "is-upcoming",
+                  )}
+                >
+                  <small>{pick.turn}</small>
+                  <strong>{pick.playerName}</strong>
+                  <em>{pick.result}</em>
+                </div>
+              ))}
             </div>
           ))}
         </div>
@@ -624,18 +706,16 @@ export function OrderSheet({
 
 /* ---------- manage sheet ---------- */
 
-export function ManageSheet({
+export function ManagePanelContent({
   draft,
-  open,
-  onOpenChange,
   onDraft,
   onDeleted,
+  onClose,
 }: {
   draft: PublicDraft;
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
   onDraft: (draft: PublicDraft) => void;
   onDeleted: () => void;
+  onClose: () => void;
 }) {
   const [busy, setBusy] = useState(false);
   const [confirming, setConfirming] = useState<"delete" | "undo" | { removePlayerId: string }>();
@@ -668,7 +748,7 @@ export function ManageSheet({
     try {
       await api.deleteDraft(draft.slug);
       toast.success(`${draft.title} deleted`);
-      onOpenChange(false);
+      onClose();
       onDeleted();
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Could not delete the draft");
@@ -711,9 +791,7 @@ export function ManageSheet({
 
   return (
     <>
-      <Drawer open={open} onOpenChange={onOpenChange} showSwipeHandle>
-        <DrawerContent aria-describedby={undefined}>
-          <div className="sheet-body" style={{ paddingBottom: 22 }}>
+      <div className="sheet-body" style={{ paddingBottom: 22 }}>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
               <h2 className="sheet-title" style={{ margin: 0 }}>
                 Manage draft
@@ -921,12 +999,10 @@ export function ManageSheet({
               </div>
             )}
 
-            <button type="button" className="btn-quiet" style={{ width: "100%", height: 46 }} onClick={() => onOpenChange(false)}>
-              Close
-            </button>
-          </div>
-        </DrawerContent>
-      </Drawer>
+        <button type="button" className="btn-quiet" style={{ width: "100%", height: 46 }} onClick={onClose}>
+          Close
+        </button>
+      </div>
 
       <AlertDialog
         open={Boolean(confirming)}
@@ -979,6 +1055,33 @@ export function ManageSheet({
         </AlertDialogContent>
       </AlertDialog>
     </>
+  );
+}
+
+export function ManageSheet({
+  draft,
+  open,
+  onOpenChange,
+  onDraft,
+  onDeleted,
+}: {
+  draft: PublicDraft;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onDraft: (draft: PublicDraft) => void;
+  onDeleted: () => void;
+}) {
+  return (
+    <Drawer open={open} onOpenChange={onOpenChange} showSwipeHandle>
+      <DrawerContent aria-describedby={undefined}>
+        <ManagePanelContent
+          draft={draft}
+          onDraft={onDraft}
+          onDeleted={onDeleted}
+          onClose={() => onOpenChange(false)}
+        />
+      </DrawerContent>
+    </Drawer>
   );
 }
 

@@ -118,8 +118,8 @@ export function SetupScreen({
   const factionPool = 24;
 
   return (
-    <main className="room-shell">
-      <header className="room-topbar">
+    <main className="room-shell setup-shell">
+      <header className="room-topbar mb-only">
         <button
           type="button"
           onClick={onCancel}
@@ -145,6 +145,10 @@ export function SetupScreen({
       </header>
 
       <form className="setup-scroll" onSubmit={submit}>
+        <div className="setup-main">
+        <button type="button" className="setup-back dk-only" onClick={onCancel}>
+          ‹ All drafts
+        </button>
         <h1 className="serif-title" style={{ margin: "0 0 16px" }}>
           Table setup
         </h1>
@@ -412,10 +416,38 @@ export function SetupScreen({
           </p>
         </div>
 
-        <button type="submit" className="btn-accent is-block" disabled={submitting}>
+        <button type="submit" className="btn-accent is-block mb-only" disabled={submitting}>
           {submitting ? "Balancing…" : "Generate pool"}
         </button>
         <div style={{ height: 20 }} />
+        </div>
+
+        <aside className="setup-summary dk-only">
+          <div className="mono-label" style={{ marginBottom: 14 }}>
+            SUMMARY
+          </div>
+          <div className="setup-summary-rows">
+            {[
+              { label: "Players", value: String(playerCount) },
+              { label: "Slices generated", value: "9" },
+              { label: "Faction pool", value: `${factionCount} of ${factionPool}` },
+              { label: "Ban phase", value: bansEnabled ? "On · 1 each" : "Off" },
+              { label: "Draft order", value: "Snake · 3 rounds" },
+              { label: "Map", value: "Standard field" },
+            ].map((row) => (
+              <div key={row.label} className="setup-summary-row">
+                <span>{row.label}</span>
+                <strong>{row.value}</strong>
+              </div>
+            ))}
+          </div>
+          <button type="submit" className="btn-accent is-block" disabled={submitting} style={{ marginTop: 18 }}>
+            {submitting ? "Balancing…" : "Generate pool"}
+          </button>
+          <p className="setup-summary-note">
+            Slices are balanced on optimal resources and influence. You can regenerate until the draft starts.
+          </p>
+        </aside>
       </form>
     </main>
   );
