@@ -23,4 +23,11 @@ describe("Draft scroll layout", () => {
     expect(body).toMatch(/overscroll-behavior-y\s*:\s*contain/);
     expect(body).toMatch(/touch-action\s*:\s*pan-y/);
   });
+
+  it("keeps the draft confirmation dock out of the scrolling list", () => {
+    const dock = declarationsFor(".draft-confirm-dock");
+
+    expect(dock).toMatch(/position\s*:\s*static/);
+    expect(dock).toMatch(/flex\s*:\s*0\s+0\s+auto/);
+  });
 });

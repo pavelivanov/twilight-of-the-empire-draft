@@ -10,6 +10,7 @@ import { LobbyScreen } from "@/components/lobby-screen";
 import { SetupScreen } from "@/components/setup-screen";
 import { Skeleton } from "@/components/ui/skeleton";
 import { api } from "@/lib/api";
+import { telegramStartTarget } from "@/lib/telegram-start";
 import { mountTelegramViewport } from "@/lib/telegram-viewport";
 import "./index.css";
 
@@ -17,11 +18,12 @@ function App() {
   const [draft, setDraft] = useState<PublicDraft>();
   const [loading, setLoading] = useState(true);
   const telegram = window.Telegram?.WebApp;
-  const [initialDraftId] = useState(
-    () => telegram?.initDataUnsafe?.start_param ?? new URLSearchParams(window.location.search).get("draft"),
+  const [startTarget] = useState(() =>
+    telegramStartTarget(telegram?.initDataUnsafe?.start_param, window.location.search),
   );
+  const { initialDraftId, telegramLaunchToken } = startTarget;
   const [screen, setScreen] = useState<"drafts" | "create" | "draft">(
-    initialDraftId ? "draft" : "drafts",
+    telegramLaunchToken ? "create" : initialDraftId ? "draft" : "drafts",
   );
   const [draftView, setDraftView] = useState<DraftView>("draft");
   const draftStatus = useRef<PublicDraft["status"] | undefined>(undefined);
@@ -36,6 +38,8 @@ function App() {
     localStorage.setItem("imperium-last-draft", nextDraft.slug);
     const url = new URL(window.location.href);
     url.searchParams.set("draft", nextDraft.slug);
+    url.searchParams.delete("channelLaunch");
+    url.searchParams.delete("groupLaunch");
     window.history.replaceState({}, "", url);
   }, []);
 
@@ -72,6 +76,8 @@ function App() {
     setScreen("drafts");
     const url = new URL(window.location.href);
     url.searchParams.delete("draft");
+    url.searchParams.delete("channelLaunch");
+    url.searchParams.delete("groupLaunch");
     window.history.replaceState({}, "", url);
   }, []);
 
@@ -79,6 +85,8 @@ function App() {
     setScreen("create");
     const url = new URL(window.location.href);
     url.searchParams.delete("draft");
+    url.searchParams.delete("channelLaunch");
+    url.searchParams.delete("groupLaunch");
     window.history.replaceState({}, "", url);
   }, []);
 
@@ -116,7 +124,11 @@ function App() {
           onDeleted={handleDeleted}
         />
       ) : screen === "create" ? (
-        <SetupScreen onCreated={(created) => acceptDraft(created, true)} onCancel={showDrafts} />
+        <SetupScreen
+          telegramLaunchToken={telegramLaunchToken}
+          onCreated={(created) => acceptDraft(created, true)}
+          onCancel={showDrafts}
+        />
       ) : draft?.status === "SETUP" ? (
         <LobbyScreen
           draft={draft}

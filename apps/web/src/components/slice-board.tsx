@@ -32,23 +32,49 @@ export function TileImage({
   );
 }
 
-export function SliceCluster({ tiles, size }: { tiles: number[]; size: number }) {
-  const layout = clusterLayout(size);
-  const tileStyle = (index: number): React.CSSProperties => ({
-    left: layout.positions[index]?.[0],
-    top: layout.positions[index]?.[1],
-    width: layout.tileWidth,
-    height: layout.tileHeight,
-  });
+export function SliceCluster({
+  tiles,
+  size = 46,
+  fluid = false,
+}: {
+  tiles: number[];
+  size?: number;
+  fluid?: boolean;
+}) {
+  const layout = clusterLayout(fluid ? 1 : size);
+  const tileStyle = (index: number): React.CSSProperties => {
+    const position = layout.positions[index];
+    if (!fluid) {
+      return {
+        left: position?.[0],
+        top: position?.[1],
+        width: layout.tileWidth,
+        height: layout.tileHeight,
+      };
+    }
+    return {
+      left: `${((position?.[0] ?? 0) / layout.width) * 100}%`,
+      top: `${((position?.[1] ?? 0) / layout.height) * 100}%`,
+      width: `${(layout.tileWidth / layout.width) * 100}%`,
+      height: `${(layout.tileHeight / layout.height) * 100}%`,
+    };
+  };
   return (
     <div
-      className="slice-cluster"
-      style={{ width: layout.width, height: layout.height }}
+      className={cn("slice-cluster", fluid && "is-fluid")}
+      style={
+        fluid
+          ? { width: "100%", aspectRatio: `${layout.width} / ${layout.height}` }
+          : { width: layout.width, height: layout.height }
+      }
       aria-label={`Slice systems ${tiles.join(", ")}`}
     >
       <span
         className="home-hex"
-        style={{ ...tileStyle(0), fontSize: Math.max(7, Math.round(size * 0.16)) }}
+        style={{
+          ...tileStyle(0),
+          fontSize: fluid ? "clamp(10px, 4vw, 18px)" : Math.max(7, Math.round(size * 0.16)),
+        }}
       >
         HOME
       </span>

@@ -19,7 +19,7 @@ contracts.
 ```mermaid
 flowchart LR
     TG["Telegram group"] -->|"webhook"| API["Hono API"]
-    TG -->|"Direct Mini App link"| WEB["React TMA"]
+    TG -->|"One-time group launch link"| WEB["React TMA"]
     WEB -->|"signed initData + version"| API
     API --> DOMAIN["Domain rules"]
     API -->|"serializable transaction"| DB[("PostgreSQL")]
@@ -33,7 +33,8 @@ flowchart LR
 - `auth` — Telegram signature verification and development identity.
 - `drafts` — creation, identity claims, regeneration, start, read model, picks.
 - `generator` — deterministic constrained generation from the versioned catalog.
-- `telegram` — webhook commands, group binding, seat claiming.
+- `telegram` — group commands, one-time launch links, native filtered group
+  selection, and chat binding.
 - `outbox` — retryable notification delivery.
 - `presenters` — converts database records to public DTOs.
 
@@ -43,12 +44,14 @@ input with Zod and throw typed HTTP errors. The server uses the Node adapter.
 ## Database model
 
 - `User` — Telegram identity.
-- `Draft` — lifecycle, config, seed, cursor, version, group.
+- `Draft` — lifecycle, config, seed, cursor, version, and notification group.
 - `DraftPlayer` — named seat, player order, optional Telegram owner.
 - `DraftOption` — frozen faction/slice/position snapshot.
 - `DraftEvent` — append-only audit history.
 - `NotificationOutbox` — Telegram delivery queue.
 - `TelegramUpdate` — webhook idempotency.
+- `TelegramDraftLaunch` — expiring, one-use group context passed through a
+  Mini App direct link.
 
 The flexible `DraftOption.payload` JSON stores versioned catalog snapshots while
 the common selection fields remain relational and constrained.

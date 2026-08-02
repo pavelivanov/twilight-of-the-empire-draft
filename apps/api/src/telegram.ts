@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import { Prisma } from "@prisma/client";
 import { Hono } from "hono";
 
@@ -7,31 +9,279 @@ import { prisma } from "./prisma.js";
 
 type TelegramUpdate = {
   update_id: number;
-  message?: {
-    chat: { id: number; type: string };
-    from?: { id: number; first_name: string; last_name?: string; username?: string };
-    text?: string;
+  message?: TelegramMessage;
+};
+
+export type TelegramMessage = {
+  chat: TelegramChat;
+  from?: { id: number; first_name: string; last_name?: string; username?: string };
+  text?: string;
+  chat_shared?: {
+    request_id: number;
+    chat_id: number;
+    title?: string;
+    username?: string;
   };
+};
+
+export type TelegramChat = {
+  id: number;
+  type: string;
+  title?: string;
+  username?: string;
+};
+
+type TelegramChatMember = {
+  status: "creator" | "administrator" | "member" | "restricted" | "left" | "kicked";
+};
+
+type TelegramUser = { id: number };
+
+type TelegramResponse<T> = {
+  ok: boolean;
+  result?: T;
+  description?: string;
 };
 
 export const telegramRouter = new Hono();
 
-async function sendMessage(chatId: string, text: string): Promise<void> {
-  if (!env.BOT_TOKEN) return;
-  const response = await fetch(`https://api.telegram.org/bot${env.BOT_TOKEN}/sendMessage`, {
+async function telegramApi<T>(method: string, payload: Record<string, unknown>): Promise<T> {
+  if (!env.BOT_TOKEN) throw new Error("Telegram bot is not configured");
+  const response = await fetch(`https://api.telegram.org/bot${env.BOT_TOKEN}/${method}`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ chat_id: chatId, text, disable_web_page_preview: true }),
+    body: JSON.stringify(payload),
   });
-  if (!response.ok) throw new Error(`Telegram returned ${response.status}`);
+  const body = (await response.json().catch(() => undefined)) as TelegramResponse<T> | undefined;
+  if (!response.ok || !body?.ok || body.result === undefined) {
+    throw new Error(body?.description ?? `Telegram returned ${response.status}`);
+  }
+  return body.result;
 }
 
-function miniAppLink(slug?: string): string {
+export async function sendTelegramMessage(
+  chatId: string,
+  text: string,
+  replyMarkup?: Record<string, unknown>,
+): Promise<void> {
+  if (!env.BOT_TOKEN) return;
+  await telegramApi("sendMessage", {
+    chat_id: chatId,
+    text,
+    link_preview_options: { is_disabled: true },
+    ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
+  });
+}
+
+const groupAdministratorRights = {
+  is_anonymous: false,
+  can_manage_chat: true,
+  can_delete_messages: false,
+  can_manage_video_chats: false,
+  can_restrict_members: false,
+  can_promote_members: false,
+  can_change_info: false,
+  can_invite_users: false,
+  can_post_stories: false,
+  can_edit_stories: false,
+  can_delete_stories: false,
+  can_post_messages: false,
+  can_edit_messages: false,
+  can_pin_messages: false,
+  can_manage_topics: false,
+  can_manage_direct_messages: false,
+  can_manage_tags: false,
+};
+
+export function groupPickerReplyMarkup(requestId: number): Record<string, unknown> {
+  return {
+    keyboard: [
+      [
+        {
+          text: "Choose notification group",
+          request_chat: {
+            request_id: requestId,
+            chat_is_channel: false,
+            user_administrator_rights: groupAdministratorRights,
+            bot_administrator_rights: groupAdministratorRights,
+            request_title: true,
+            request_username: true,
+          },
+        },
+      ],
+    ],
+    resize_keyboard: true,
+    one_time_keyboard: true,
+    input_field_placeholder: "Choose a group you administer",
+  };
+}
+
+export async function sendTelegramGroupPicker(
+  userChatId: string,
+  draftTitle: string,
+  requestId: number,
+): Promise<void> {
+  await sendTelegramMessage(
+    userChatId,
+    `Choose where to post every action from ${draftTitle}. Telegram only shows groups you administer and will grant the bot administrator access.`,
+    groupPickerReplyMarkup(requestId),
+  );
+}
+
+export function miniAppLink(startParam?: string): string {
   if (env.BOT_USERNAME && env.TELEGRAM_APP_SHORT_NAME) {
     const base = `https://t.me/${env.BOT_USERNAME}/${env.TELEGRAM_APP_SHORT_NAME}`;
-    return slug ? `${base}?startapp=${encodeURIComponent(slug)}` : base;
+    return startParam ? `${base}?startapp=${encodeURIComponent(startParam)}` : base;
   }
-  return slug ? `${env.APP_URL}?draft=${encodeURIComponent(slug)}` : env.APP_URL;
+  if (!startParam) return env.APP_URL;
+  const isGroupLaunch = /^(?:group|channel)_/.test(startParam);
+  const parameter = isGroupLaunch ? "groupLaunch" : "draft";
+  return `${env.APP_URL}?${parameter}=${encodeURIComponent(startParam.replace(/^(?:group|channel)_/, ""))}`;
+}
+
+export function groupDraftLaunchReplyMarkup(token: string): Record<string, unknown> {
+  return {
+    inline_keyboard: [[{ text: "Create draft", url: miniAppLink(`group_${token}`) }]],
+  };
+}
+
+function canManageGroup(member: TelegramChatMember): boolean {
+  return member.status === "creator" || member.status === "administrator";
+}
+
+export async function verifyTelegramNotificationChatAccess(chatId: string, userId: number): Promise<TelegramChat> {
+  const bot = await telegramApi<TelegramUser>("getMe", {});
+  const [chat, userMember, botMember] = await Promise.all([
+    telegramApi<TelegramChat>("getChat", { chat_id: chatId }),
+    telegramApi<TelegramChatMember>("getChatMember", { chat_id: chatId, user_id: userId }),
+    telegramApi<TelegramChatMember>("getChatMember", { chat_id: chatId, user_id: bot.id }),
+  ]);
+  if (!new Set(["supergroup", "group"]).has(chat.type)) {
+    throw new Error("Choose a Telegram group, not a channel");
+  }
+  if (!canManageGroup(userMember)) {
+    throw new Error("You must be an administrator in this group");
+  }
+  if (!canManageGroup(botMember)) {
+    throw new Error("Make the bot an administrator in this group");
+  }
+  return chat;
+}
+
+export async function resolveNewDraftTarget(
+  message: TelegramMessage,
+): Promise<TelegramChat | undefined> {
+  return new Set(["supergroup", "group"]).has(message.chat.type) ? message.chat : undefined;
+}
+
+async function bindSharedGroup(
+  message: NonNullable<TelegramUpdate["message"]>,
+  user: { id: string; telegramId: string },
+): Promise<void> {
+  const shared = message.chat_shared;
+  if (!shared || !message.from) return;
+  const draft = await prisma.draft.findFirst({
+    where: { telegramChannelRequestId: shared.request_id, creatorUserId: user.id },
+    select: { id: true, slug: true, title: true, creatorUserId: true },
+  });
+  if (!draft) {
+    await sendTelegramMessage(
+      user.telegramId,
+      "That group request has expired. Return to the draft and request a new one from Manage draft.",
+      { remove_keyboard: true },
+    );
+    return;
+  }
+
+  let chat: TelegramChat;
+  try {
+    chat = await verifyTelegramNotificationChatAccess(String(shared.chat_id), message.from.id);
+  } catch (error) {
+    await sendTelegramMessage(
+      user.telegramId,
+      error instanceof Error ? error.message : "I could not connect that group. Choose another one.",
+    );
+    return;
+  }
+
+  const chatTitle = chat.title ?? shared.title ?? chat.username ?? shared.username ?? "Telegram group";
+  const chatUsername = chat.username ?? shared.username;
+  const bound = await prisma.$transaction(async (transaction) => {
+    const updated = await transaction.draft.updateMany({
+      where: {
+        id: draft.id,
+        creatorUserId: user.id,
+        telegramChannelRequestId: shared.request_id,
+      },
+      data: {
+        telegramChatId: String(shared.chat_id),
+        telegramChatTitle: chatTitle,
+        telegramChatUsername: chatUsername,
+        telegramChannelRequestId: null,
+      },
+    });
+    if (updated.count !== 1) return false;
+    const event = await transaction.draftEvent.create({
+      data: {
+        draftId: draft.id,
+        actorUserId: user.id,
+        type: "CHAT_BOUND",
+        payload: { chatId: String(shared.chat_id), chatTitle, chatUsername, source: "group_picker" },
+      },
+    });
+    await transaction.notificationOutbox.create({
+      data: {
+        draftId: draft.id,
+        eventId: event.id,
+        chatId: String(shared.chat_id),
+        message: `📣 Owner created ${draft.title} and connected this group. Every accepted player and owner action will be posted here.\nOpen the draft: ${miniAppLink(draft.slug)}`,
+      },
+    });
+    return true;
+  });
+  if (!bound) return;
+
+  try {
+    await sendTelegramMessage(
+      user.telegramId,
+      `Connected ${chatTitle} to ${draft.title}. You can return to the Mini App.`,
+      { remove_keyboard: true },
+    );
+  } catch (error) {
+    console.error("Could not send Telegram group confirmation", error);
+  }
+}
+
+async function sendGroupDraftLaunch(message: TelegramMessage): Promise<void> {
+  const target = await resolveNewDraftTarget(message);
+  if (!target) {
+    await sendTelegramMessage(
+      String(message.chat.id),
+      "Send /newdraft in a Telegram group where the bot is an administrator.",
+    );
+    return;
+  }
+  const token = randomUUID();
+  await prisma.telegramDraftLaunch.deleteMany({ where: { expiresAt: { lte: new Date() } } });
+  await prisma.telegramDraftLaunch.create({
+    data: {
+      token,
+      telegramChatId: String(target.id),
+      telegramChatTitle: target.title,
+      telegramChatUsername: target.username,
+      expiresAt: new Date(Date.now() + 60 * 60 * 1_000),
+    },
+  });
+  try {
+    await sendTelegramMessage(
+      String(message.chat.id),
+      `Create a draft for ${target.title ?? "this chat"}. The link expires in one hour and can be used once.`,
+      groupDraftLaunchReplyMarkup(token),
+    );
+  } catch (error) {
+    await prisma.telegramDraftLaunch.deleteMany({ where: { token } });
+    throw error;
+  }
 }
 
 telegramRouter.post("/webhook", async (context) => {
@@ -48,8 +298,21 @@ telegramRouter.post("/webhook", async (context) => {
     throw error;
   }
   const message = update.message;
-  if (!message?.text || !message.from) return context.json({ ok: true });
-  const [command, argument] = message.text.trim().split(/\s+/, 2);
+  if (!message) return context.json({ ok: true });
+  const [rawCommand, argument] = message.text?.trim().split(/\s+/, 2) ?? [];
+  const command = rawCommand?.split("@", 1)[0]?.toLocaleLowerCase();
+
+  if (command === "/newdraft") {
+    try {
+      await sendGroupDraftLaunch(message);
+    } catch (error) {
+      await prisma.telegramUpdate.deleteMany({ where: { updateId: String(update.update_id) } });
+      throw error;
+    }
+    return context.json({ ok: true });
+  }
+
+  if (!message.from) return context.json({ ok: true });
   const user = await prisma.user.upsert({
     where: { telegramId: String(message.from.id) },
     create: {
@@ -57,24 +320,52 @@ telegramRouter.post("/webhook", async (context) => {
       displayName: [message.from.first_name, message.from.last_name].filter(Boolean).join(" "),
       username: message.from.username,
     },
-    update: { username: message.from.username },
+    update: {
+      displayName: [message.from.first_name, message.from.last_name].filter(Boolean).join(" "),
+      username: message.from.username,
+    },
   });
 
-  if (command?.startsWith("/start")) {
-    await sendMessage(
+  if (message.chat_shared) {
+    try {
+      await bindSharedGroup(message, user);
+    } catch (error) {
+      console.error("Telegram group binding failed", error);
+      await prisma.telegramUpdate.deleteMany({ where: { updateId: String(update.update_id) } });
+      throw error;
+    }
+    return context.json({ ok: true });
+  }
+  if (!message.text) return context.json({ ok: true });
+
+  if (command === "/start") {
+    await sendTelegramMessage(
       String(message.chat.id),
       `Create or join a Twilight Imperium draft in the Mini App:\n${miniAppLink()}`,
     );
-  } else if (command?.startsWith("/draft") && !argument) {
-    await sendMessage(String(message.chat.id), "Usage: /draft <draft-link-code>");
-  } else if (command?.startsWith("/draft") && argument) {
+  } else if (command === "/draft" && !argument) {
+    await sendTelegramMessage(String(message.chat.id), "Usage: /draft <draft-link-code>");
+  } else if (command === "/draft" && argument) {
     const draft = await prisma.draft.findUnique({ where: { slug: argument } });
     if (!draft) {
-      await sendMessage(String(message.chat.id), "I could not find that draft.");
+      await sendTelegramMessage(String(message.chat.id), "I could not find that draft.");
     } else if (draft.creatorUserId !== user.id) {
-      await sendMessage(String(message.chat.id), "Only the draft creator can connect it to this group.");
+      await sendTelegramMessage(String(message.chat.id), "Only the draft creator can connect it to this chat.");
+    } else if (message.chat.type === "private") {
+      await sendTelegramMessage(
+        String(message.chat.id),
+        "Use the group picker in the Mini App, or send this command in a group.",
+      );
     } else {
-      await prisma.draft.update({ where: { id: draft.id }, data: { telegramChatId: String(message.chat.id) } });
+      await prisma.draft.update({
+        where: { id: draft.id },
+        data: {
+          telegramChatId: String(message.chat.id),
+          telegramChatTitle: message.chat.title,
+          telegramChatUsername: message.chat.username,
+          telegramChannelRequestId: null,
+        },
+      });
       await prisma.draftEvent.create({
         data: {
           draftId: draft.id,
@@ -83,12 +374,12 @@ telegramRouter.post("/webhook", async (context) => {
           payload: { chatId: String(message.chat.id) },
         },
       });
-      await sendMessage(
+      await sendTelegramMessage(
         String(message.chat.id),
         `Connected to ${draft.title}.\nOpen the draft: ${miniAppLink(draft.slug)}`,
       );
     }
-  } else if (command?.startsWith("/status")) {
+  } else if (command === "/status") {
     const draft = await prisma.draft.findFirst({
       where: { telegramChatId: String(message.chat.id), status: { in: ["SETUP", "BANNING", "DRAFTING", "COMPLETE"] } },
       orderBy: { createdAt: "desc" },
@@ -105,11 +396,11 @@ telegramRouter.post("/webhook", async (context) => {
         ? `${draft.options.length}/${draft.players.length} bans locked`
         : `${draft.turnCursor}/${draft.players.length * 3} choices`
       : "";
-    await sendMessage(
+    await sendTelegramMessage(
       String(message.chat.id),
       draft
         ? `${draft.title}: ${draft.status.toLowerCase()}, ${progress}.\n${miniAppLink(draft.slug)}`
-        : "This group is not connected to an active draft. Use /draft <draft-link-code>.",
+        : "This chat is not connected to an active draft. Use /draft <draft-link-code>.",
     );
   }
   return context.json({ ok: true });
@@ -138,7 +429,7 @@ export function startOutboxWorker(): () => void {
         });
         if (claimed.count !== 1) continue;
         try {
-          await sendMessage(job.chatId, job.message);
+          await sendTelegramMessage(job.chatId, job.message);
           await prisma.notificationOutbox.update({
             where: { id: job.id },
             data: { status: "SENT", sentAt: new Date(), lastError: null },

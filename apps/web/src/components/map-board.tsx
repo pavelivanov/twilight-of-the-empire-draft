@@ -50,6 +50,7 @@ type WedgeTile = {
 
 export function MapBoard({ draft }: { draft: PublicDraft }) {
   const [zoom, setZoom] = useState(1.2);
+  const isComplete = draft.status === "COMPLETE" || draft.turnCursor >= draft.totalTurns;
 
   const { wedgeByCoordinate, placedCount, legend } = useMemo(() => {
     const byCoordinate = new Map<string, WedgeTile>();
@@ -101,9 +102,11 @@ export function MapBoard({ draft }: { draft: PublicDraft }) {
     <div>
       <div className="map-toolbar">
         <div>
-          <div className="map-toolbar-kicker">{draft.status === "COMPLETE" ? "MAP LOCKED" : "LIVE ASSEMBLY"}</div>
+          <div className="map-toolbar-kicker">{isComplete ? "FINAL MAP" : "LIVE ASSEMBLY"}</div>
           <div className="map-toolbar-sub">
-            {placedCount} of {draft.players.length} wedges placed
+            {isComplete
+              ? `Draft complete · ${placedCount} players seated`
+              : `${placedCount} of ${draft.players.length} wedges placed`}
           </div>
         </div>
         <div className="map-toolbar-actions">
@@ -169,7 +172,9 @@ export function MapBoard({ draft }: { draft: PublicDraft }) {
 
       <div className="map-legend">
         <div className="mono-label" style={{ marginBottom: 10 }}>
-          SEATING · {placedCount}/{draft.players.length} PLACED
+          {isComplete
+            ? `FINAL SEATING · ${placedCount} PLAYERS`
+            : `SEATING · ${placedCount}/${draft.players.length} PLACED`}
         </div>
         <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
           {legend.map((row) => (
@@ -181,10 +186,12 @@ export function MapBoard({ draft }: { draft: PublicDraft }) {
             </div>
           ))}
         </div>
-        <div className="hint-callout" style={{ marginTop: 14 }}>
-          <i aria-hidden="true" />
-          <p>Unclaimed wedges stay dim until their slice and seat are both taken.</p>
-        </div>
+        {!isComplete && (
+          <div className="hint-callout" style={{ marginTop: 14 }}>
+            <i aria-hidden="true" />
+            <p>Unclaimed wedges stay dim until their slice and seat are both taken.</p>
+          </div>
+        )}
       </div>
     </div>
   );

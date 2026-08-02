@@ -1,7 +1,10 @@
-import { afterAll, describe, expect, it } from "vitest";
+import { createHmac } from "node:crypto";
+
+import { afterAll, describe, expect, it, vi } from "vitest";
 import type { PublicDraft } from "@imperium/domain";
 
 import { app } from "./app.js";
+import { env } from "./env.js";
 import { prisma } from "./prisma.js";
 
 const runId = crypto.randomUUID();
@@ -540,6 +543,213 @@ describe.sequential("draft management", () => {
     });
     const summaries = (await listResponse.json()) as Array<{ slug: string }>;
     expect(summaries.some((summary) => summary.slug === deletedSlug)).toBe(false);
+  });
+});
+
+describe.sequential("Telegram action notifications", () => {
+  const chatId = `notification-channel-${runId}`;
+  let notificationDraft: PublicDraft | undefined;
+
+  it("queues player and creator actions and preserves the deletion notice", async () => {
+    notificationDraft = await responseDraft(
+      await app.request("/api/drafts", {
+        method: "POST",
+        headers: jsonHeaders(creatorIdentity, "Alice"),
+        body: JSON.stringify({
+          title: `Notifications ${runId}`,
+          players: ["Alice", "Bob", "Cara", "Dan"].map((displayName) => ({ displayName })),
+          seed: `notifications-${runId}`,
+          config: { playerCount: 4, sliceCount: 9, factionCount: 12 },
+        }),
+      }),
+    );
+    await prisma.draft.update({
+      where: { id: notificationDraft.id },
+      data: { telegramChatId: chatId, telegramChatTitle: "Test channel" },
+    });
+
+    const claimedPlayer = notificationDraft.players.find((player) => !player.isClaimed)!;
+    const seatIdentity = `notification-seat-${runId}`;
+    notificationDraft = await responseDraft(
+      await app.request(`/api/drafts/${notificationDraft.slug}/players/${claimedPlayer.id}/claim`, {
+        method: "POST",
+        headers: jsonHeaders(seatIdentity, claimedPlayer.displayName),
+        body: JSON.stringify({ version: notificationDraft.version }),
+      }),
+    );
+    notificationDraft = await responseDraft(
+      await app.request(
+        `/api/drafts/${notificationDraft.slug}/players/${claimedPlayer.id}/claim?version=${notificationDraft.version}`,
+        { method: "DELETE", headers: jsonHeaders(seatIdentity, claimedPlayer.displayName) },
+      ),
+    );
+
+    const removedPlayer = notificationDraft.players.find(
+      (player) => !player.isClaimed && player.id !== claimedPlayer.id,
+    )!;
+    notificationDraft = await responseDraft(
+      await app.request(
+        `/api/drafts/${notificationDraft.slug}/players/${removedPlayer.id}?version=${notificationDraft.version}`,
+        { method: "DELETE", headers: jsonHeaders(creatorIdentity, "Alice") },
+      ),
+    );
+    notificationDraft = await responseDraft(
+      await app.request(`/api/drafts/${notificationDraft.slug}/regenerate`, {
+        method: "POST",
+        headers: jsonHeaders(creatorIdentity, "Alice"),
+        body: JSON.stringify({ version: notificationDraft.version, seed: "integration-lifecycle" }),
+      }),
+    );
+
+    const option = notificationDraft.options.find((candidate) => !candidate.selectedByPlayerId)!;
+    notificationDraft = await responseDraft(
+      await app.request(`/api/drafts/${notificationDraft.slug}/picks`, {
+        method: "POST",
+        headers: jsonHeaders(creatorIdentity, "Alice"),
+        body: JSON.stringify({
+          optionId: option.id,
+          version: notificationDraft.version,
+          idempotencyKey: crypto.randomUUID(),
+        }),
+      }),
+    );
+    notificationDraft = await responseDraft(
+      await app.request(`/api/drafts/${notificationDraft.slug}/picks/undo`, {
+        method: "POST",
+        headers: jsonHeaders(creatorIdentity, "Alice"),
+        body: JSON.stringify({ version: notificationDraft.version }),
+      }),
+    );
+
+    const queued = await prisma.notificationOutbox.findMany({
+      where: { draftId: notificationDraft.id, chatId },
+      include: { event: { select: { type: true } } },
+    });
+    expect(queued.map((job) => job.event?.type)).toEqual(
+      expect.arrayContaining([
+        "PLAYER_CLAIMED",
+        "PLAYER_UNCLAIMED",
+        "PLAYER_REMOVED",
+        "POOL_REGENERATED",
+        "OPTION_SELECTED",
+        "PICK_REVERTED",
+      ]),
+    );
+
+    const deletedId = notificationDraft.id;
+    const deleteResponse = await app.request(`/api/drafts/${notificationDraft.slug}`, {
+      method: "DELETE",
+      headers: jsonHeaders(creatorIdentity, "Alice"),
+    });
+    expect(deleteResponse.ok).toBe(true);
+    notificationDraft = undefined;
+
+    const survivingJobs = await prisma.notificationOutbox.findMany({ where: { chatId } });
+    expect(survivingJobs).toHaveLength(7);
+    expect(survivingJobs).toContainEqual(
+      expect.objectContaining({ draftId: null, eventId: null, message: expect.stringContaining("Owner deleted") }),
+    );
+    expect(survivingJobs.every((job) => job.draftId === null && job.eventId === null)).toBe(true);
+    expect(await prisma.draft.findUnique({ where: { id: deletedId } })).toBeNull();
+  });
+
+  afterAll(async () => {
+    if (notificationDraft?.id) await prisma.draft.delete({ where: { id: notificationDraft.id } });
+    await prisma.notificationOutbox.deleteMany({ where: { chatId } });
+  });
+});
+
+describe.sequential("group command draft launch", () => {
+  const token = crypto.randomUUID();
+  const telegramUserId = 8_100_000_001;
+  const telegramChatId = "-1008100000001";
+  const botToken = "123456789:test-bot-token";
+  let groupDraftId: string | undefined;
+
+  function telegramAuthorization(): string {
+    const params = new URLSearchParams({
+      auth_date: String(Math.floor(Date.now() / 1_000)),
+      user: JSON.stringify({ id: telegramUserId, first_name: "Group", last_name: "Creator" }),
+    });
+    const checkString = [...params.entries()]
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, value]) => `${key}=${value}`)
+      .join("\n");
+    const secret = createHmac("sha256", "WebAppData").update(botToken).digest();
+    params.set("hash", createHmac("sha256", secret).update(checkString).digest("hex"));
+    return `tma ${params.toString()}`;
+  }
+
+  it("verifies the creator and bot, consumes the link, and binds the new draft", async () => {
+    const originalBotToken = env.BOT_TOKEN;
+    env.BOT_TOKEN = botToken;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string | URL | Request) => {
+        const method = String(input).split("/").at(-1);
+        const result =
+          method === "getMe"
+            ? { id: 9_900_000_001 }
+            : method === "getChat"
+              ? { id: Number(telegramChatId), type: "supergroup", title: "Galactic Council", username: "council" }
+              : { status: "administrator", can_post_messages: true };
+        return new Response(JSON.stringify({ ok: true, result }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }),
+    );
+
+    try {
+      await prisma.telegramDraftLaunch.create({
+        data: {
+          token,
+          telegramChatId,
+          telegramChatTitle: "Galactic Council",
+          telegramChatUsername: "council",
+          expiresAt: new Date(Date.now() + 60_000),
+        },
+      });
+      const response = await app.request("/api/drafts", {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: telegramAuthorization() },
+        body: JSON.stringify({
+          title: `Group launch ${runId}`,
+          players: ["Creator", "Bob", "Cara"].map((displayName) => ({ displayName })),
+          seed: "integration-lifecycle",
+          config: { playerCount: 3, sliceCount: 9, factionCount: 12 },
+          telegramLaunchToken: token,
+        }),
+      });
+      expect(response.status).toBe(201);
+      const groupDraft = (await response.json()) as PublicDraft;
+      groupDraftId = groupDraft.id;
+
+      expect(groupDraft.telegramChannel).toMatchObject({ title: "Galactic Council", username: "council" });
+      expect(groupDraft.events).toContainEqual(
+        expect.objectContaining({
+          type: "CHAT_BOUND",
+          payload: expect.objectContaining({ source: "group_command", chatId: telegramChatId }),
+        }),
+      );
+      expect(await prisma.telegramDraftLaunch.findUnique({ where: { token } })).toBeNull();
+      expect(
+        await prisma.notificationOutbox.count({ where: { draftId: groupDraft.id, chatId: telegramChatId } }),
+      ).toBe(1);
+      expect(
+        await prisma.draft.findUnique({ where: { id: groupDraft.id }, select: { telegramChatId: true } }),
+      ).toEqual({ telegramChatId });
+    } finally {
+      env.BOT_TOKEN = originalBotToken;
+      vi.unstubAllGlobals();
+    }
+  });
+
+  afterAll(async () => {
+    if (groupDraftId) await prisma.draft.delete({ where: { id: groupDraftId } });
+    await prisma.notificationOutbox.deleteMany({ where: { chatId: telegramChatId } });
+    await prisma.telegramDraftLaunch.deleteMany({ where: { token } });
+    await prisma.user.deleteMany({ where: { telegramId: String(telegramUserId) } });
   });
 });
 

@@ -5,7 +5,7 @@ import type { Faction, Position, PublicDraft, PublicOption } from "@imperium/dom
 
 import { BanPhaseView, banLockedCount } from "@/components/ban-phase";
 import { DraftActivity } from "@/components/draft-activity";
-import { DraftNavigation, type DraftView } from "@/components/draft-navigation";
+import { DraftNavigation, resolveDraftView, type DraftView } from "@/components/draft-navigation";
 import { MapBoard } from "@/components/map-board";
 import {
   ManageSheet,
@@ -53,6 +53,7 @@ export function DraftScreen({
 
   const isBanning = draft.status === "BANNING";
   const isComplete = draft.status === "COMPLETE" || draft.turnCursor >= draft.totalTurns;
+  const visibleView = resolveDraftView(view, isComplete);
   const activePlayer = draft.players.find((player) => player.id === draft.activePlayerId);
   const currentPlayer = draft.players.find((player) => player.isCurrentUser);
   const isMyTurn = Boolean(currentPlayer && activePlayer && currentPlayer.id === activePlayer.id);
@@ -220,7 +221,7 @@ export function DraftScreen({
           <BanPhaseView draft={draft} onDraft={onDraft} />
         ) : (
           <>
-        {view === "draft" && (
+        {visibleView === "draft" && (
           <>
             <TurnStrip draft={draft} onOpenOrder={() => setOrderOpen(true)} />
 
@@ -398,26 +399,29 @@ export function DraftScreen({
           </>
         )}
 
-        {view === "map" && <MapBoard draft={draft} />}
-        {view === "table" && <TableView draft={draft} onDraft={onDraft} busy={busy} setBusy={setBusy} />}
-        {view === "activity" && <DraftActivity draft={draft} />}
+        {visibleView === "map" && <MapBoard draft={draft} />}
+        {visibleView === "table" && <TableView draft={draft} onDraft={onDraft} busy={busy} setBusy={setBusy} />}
+        {visibleView === "activity" && <DraftActivity draft={draft} />}
 
-        {view === "draft" && selectedOption && (
-          <div className="confirm-dock">
-            <button type="button" className="btn-ghost-lg" onClick={() => setSelectedOptionId(undefined)}>
-              Cancel
-            </button>
-            <button type="button" className="btn-accent" disabled={busy} onClick={() => void commitPick(selectedOption)}>
-              {isManagingTurn ? `Take for ${activePlayer?.displayName}` : "Take"}{" "}
-              {selectedOption.kind === "POSITION" ? selectedOption.label.toLowerCase() : selectedOption.label}
-            </button>
-          </div>
-        )}
           </>
         )}
       </div>
 
-      {!isBanning && <DraftNavigation view={view} onViewChange={onViewChange} />}
+      {!isBanning && visibleView === "draft" && selectedOption && (
+        <div className="confirm-dock draft-confirm-dock">
+          <button type="button" className="btn-ghost-lg" onClick={() => setSelectedOptionId(undefined)}>
+            Cancel
+          </button>
+          <button type="button" className="btn-accent" disabled={busy} onClick={() => void commitPick(selectedOption)}>
+            {isManagingTurn ? `Take for ${activePlayer?.displayName}` : "Take"}{" "}
+            {selectedOption.kind === "POSITION" ? selectedOption.label.toLowerCase() : selectedOption.label}
+          </button>
+        </div>
+      )}
+
+      {!isBanning && (
+        <DraftNavigation view={visibleView} onViewChange={onViewChange} completed={isComplete} />
+      )}
 
       <SliceSheet
         draft={draft}

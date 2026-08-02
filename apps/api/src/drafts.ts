@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomInt, randomUUID } from "node:crypto";
 
 import { Prisma } from "@prisma/client";
 import {
@@ -20,14 +20,97 @@ import { z } from "zod";
 import { zValidator } from "@hono/zod-validator";
 
 import type { ApiEnvironment } from "./auth.js";
+import { env } from "./env.js";
 import { ApiError } from "./errors.js";
 import { prisma } from "./prisma.js";
 import { presentDraft } from "./presenter.js";
+import { miniAppLink, sendTelegramGroupPicker, verifyTelegramNotificationChatAccess } from "./telegram.js";
 
 export const draftsRouter = new Hono<ApiEnvironment>();
 
 const serializableRetryLimit = 8;
 const banSchema = pickSchema.extend({ playerId: z.string().min(1).optional() });
+
+type NotificationDraft = {
+  id: string;
+  telegramChatId: string | null;
+};
+
+type TelegramDraftLaunch = {
+  token: string;
+  telegramChatId: string;
+  telegramChatTitle: string;
+  telegramChatUsername?: string;
+};
+
+async function queueDraftNotification(
+  transaction: Prisma.TransactionClient,
+  draft: NotificationDraft,
+  eventId: string,
+  message: string,
+): Promise<void> {
+  if (!draft.telegramChatId) return;
+  await transaction.notificationOutbox.create({
+    data: {
+      draftId: draft.id,
+      eventId,
+      chatId: draft.telegramChatId,
+      message,
+    },
+  });
+}
+
+async function reserveTelegramChannelRequest(draftId: string): Promise<number> {
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const requestId = randomInt(1, 2_147_483_647);
+    try {
+      await prisma.draft.update({
+        where: { id: draftId },
+        data: { telegramChannelRequestId: requestId },
+      });
+      return requestId;
+    } catch (error) {
+      const collision = error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002";
+      if (!collision) throw error;
+    }
+  }
+  throw new ApiError(500, "GROUP_REQUEST_FAILED", "Could not create a Telegram group request");
+}
+
+async function verifyTelegramDraftLaunch(
+  token: string | undefined,
+  actor: { telegramId: string; isDemo: boolean },
+): Promise<TelegramDraftLaunch | undefined> {
+  if (!token) return undefined;
+  if (actor.isDemo) {
+    throw new ApiError(409, "TELEGRAM_REQUIRED", "Open this group link inside the Telegram Mini App");
+  }
+  const launch = await prisma.telegramDraftLaunch.findFirst({
+    where: { token, expiresAt: { gt: new Date() } },
+  });
+  if (!launch) {
+    throw new ApiError(409, "GROUP_LAUNCH_EXPIRED", "This group draft link has expired or was already used");
+  }
+  const telegramUserId = Number(actor.telegramId);
+  if (!Number.isSafeInteger(telegramUserId)) {
+    throw new ApiError(401, "INVALID_TELEGRAM_USER", "Telegram user identity is invalid");
+  }
+  try {
+    const chat = await verifyTelegramNotificationChatAccess(launch.telegramChatId, telegramUserId);
+    return {
+      token,
+      telegramChatId: launch.telegramChatId,
+      telegramChatTitle: chat.title ?? launch.telegramChatTitle ?? chat.username ?? "Telegram group",
+      telegramChatUsername: chat.username ?? launch.telegramChatUsername ?? undefined,
+    };
+  } catch (error) {
+    throw new ApiError(
+      403,
+      "GROUP_ACCESS_REQUIRED",
+      error instanceof Error ? error.message : "You and the bot must be administrators in this group",
+    );
+  }
+}
 
 async function withSerializableRetry<T>(
   operation: (transaction: Prisma.TransactionClient) => Promise<T>,
@@ -198,6 +281,7 @@ draftsRouter.get("/", async (context) => {
 draftsRouter.post("/", zValidator("json", createDraftSchema), async (context) => {
   const actor = context.get("actor");
   const input = context.req.valid("json");
+  const telegramLaunch = await verifyTelegramDraftLaunch(input.telegramLaunchToken, actor);
   const seed = input.seed ?? randomUUID();
   const slug = await uniqueSlug(input.title);
   const options = buildOptions(seed, input.config);
@@ -207,14 +291,25 @@ draftsRouter.post("/", zValidator("json", createDraftSchema), async (context) =>
     input.players.map((player, inputIndex) => ({ ...player, inputIndex })),
     seededRandom(`${seed}:players`),
   );
-  const draft = await prisma.$transaction(
+  const draft = await withSerializableRetry(
     async (transaction) => {
+      if (telegramLaunch) {
+        const consumed = await transaction.telegramDraftLaunch.deleteMany({
+          where: { token: telegramLaunch.token, expiresAt: { gt: startedAt } },
+        });
+        if (consumed.count !== 1) {
+          throw new ApiError(409, "GROUP_LAUNCH_EXPIRED", "This group draft link has expired or was already used");
+        }
+      }
       const created = await transaction.draft.create({
         data: {
           slug,
           title: input.title,
           status: withBanPhase ? "BANNING" : "DRAFTING",
           creatorUserId: actor.userId,
+          telegramChatId: telegramLaunch?.telegramChatId,
+          telegramChatTitle: telegramLaunch?.telegramChatTitle,
+          telegramChatUsername: telegramLaunch?.telegramChatUsername,
           playerCount: input.config.playerCount,
           seed,
           generatorVersion: GENERATOR_VERSION,
@@ -230,18 +325,6 @@ draftsRouter.post("/", zValidator("json", createDraftSchema), async (context) =>
             })),
           },
           options: { create: options },
-          events: {
-            create: {
-              type: "DRAFT_CREATED",
-              actorUserId: actor.userId,
-              payload: {
-                seed,
-                playerCount: input.config.playerCount,
-                sliceCount: input.config.sliceCount,
-                factionCount: input.config.factionCount,
-              },
-            },
-          },
         },
         select: {
           id: true,
@@ -251,6 +334,42 @@ draftsRouter.post("/", zValidator("json", createDraftSchema), async (context) =>
           },
         },
       });
+      await transaction.draftEvent.create({
+        data: {
+          draftId: created.id,
+          type: "DRAFT_CREATED",
+          actorUserId: actor.userId,
+          payload: {
+            seed,
+            playerCount: input.config.playerCount,
+            sliceCount: input.config.sliceCount,
+            factionCount: input.config.factionCount,
+          },
+        },
+      });
+      if (telegramLaunch) {
+        const chatBoundEvent = await transaction.draftEvent.create({
+          data: {
+            draftId: created.id,
+            type: "CHAT_BOUND",
+            actorUserId: actor.userId,
+            payload: {
+              chatId: telegramLaunch.telegramChatId,
+              chatTitle: telegramLaunch.telegramChatTitle,
+              chatUsername: telegramLaunch.telegramChatUsername,
+              source: "group_command",
+            },
+          },
+        });
+        await transaction.notificationOutbox.create({
+          data: {
+            draftId: created.id,
+            eventId: chatBoundEvent.id,
+            chatId: telegramLaunch.telegramChatId,
+            message: `📣 Owner created ${input.title} and connected this group. Every accepted player and owner action will be posted here.\nOpen the draft: ${miniAppLink(slug)}`,
+          },
+        });
+      }
       await transaction.draftEvent.create({
         data: {
           draftId: created.id,
@@ -265,7 +384,6 @@ draftsRouter.post("/", zValidator("json", createDraftSchema), async (context) =>
       });
       return created;
     },
-    { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
   );
   return context.json(await presentDraft(draft.id, actor.userId), 201);
 });
@@ -278,18 +396,72 @@ draftsRouter.get("/:draftId", async (context) => {
   return context.json(draft);
 });
 
+draftsRouter.post("/:draftId/telegram-channel-picker", async (context) => {
+  const actor = context.get("actor");
+  if (actor.isDemo) {
+    throw new ApiError(409, "TELEGRAM_REQUIRED", "Open the Mini App in Telegram to choose a group");
+  }
+  if (!env.BOT_TOKEN) {
+    throw new ApiError(503, "BOT_NOT_CONFIGURED", "Telegram group notifications are not configured");
+  }
+  const draftId = context.req.param("draftId");
+  const draft = await prisma.draft.findFirst({
+    where: { OR: [{ id: draftId }, { slug: draftId }] },
+    select: { id: true, title: true, creatorUserId: true },
+  });
+  if (!draft) throw new ApiError(404, "DRAFT_NOT_FOUND", "Draft not found");
+  if (draft.creatorUserId !== actor.userId) {
+    throw new ApiError(403, "CREATOR_REQUIRED", "Only the creator can choose the notification group");
+  }
+
+  const requestId = await reserveTelegramChannelRequest(draft.id);
+  try {
+    await sendTelegramGroupPicker(actor.telegramId, draft.title, requestId);
+  } catch (error) {
+    await prisma.draft.updateMany({
+      where: { id: draft.id, telegramChannelRequestId: requestId },
+      data: { telegramChannelRequestId: null },
+    });
+    console.error("Could not send Telegram group picker", error);
+    throw new ApiError(
+      502,
+      "GROUP_PICKER_UNAVAILABLE",
+      "Could not open the group picker. Open the bot privately, press Start, and try again",
+    );
+  }
+  return context.json({ requested: true });
+});
+
 draftsRouter.delete("/:draftId", async (context) => {
   const actor = context.get("actor");
   const draftId = context.req.param("draftId");
   const draft = await prisma.draft.findFirst({
     where: { OR: [{ id: draftId }, { slug: draftId }] },
-    select: { id: true, slug: true, creatorUserId: true },
+    select: { id: true, slug: true, title: true, creatorUserId: true, telegramChatId: true },
   });
   if (!draft) throw new ApiError(404, "DRAFT_NOT_FOUND", "Draft not found");
   if (draft.creatorUserId !== actor.userId) {
     throw new ApiError(403, "CREATOR_REQUIRED", "Only the creator can delete the draft");
   }
-  await prisma.draft.delete({ where: { id: draft.id } });
+  await prisma.$transaction(async (transaction) => {
+    if (draft.telegramChatId) {
+      const event = await transaction.draftEvent.create({
+        data: {
+          draftId: draft.id,
+          type: "DRAFT_DELETED",
+          actorUserId: actor.userId,
+          payload: { title: draft.title },
+        },
+      });
+      await queueDraftNotification(
+        transaction,
+        draft,
+        event.id,
+        `🗑 Owner deleted ${draft.title}. This draft is no longer available.`,
+      );
+    }
+    await transaction.draft.delete({ where: { id: draft.id } });
+  });
   return context.json({ id: draft.id, slug: draft.slug });
 });
 
@@ -329,7 +501,7 @@ draftsRouter.post(
           where: { id: draft.id },
           data: { version: { increment: 1 } },
         });
-        await transaction.draftEvent.create({
+        const event = await transaction.draftEvent.create({
           data: {
             draftId: draft.id,
             type: "PLAYER_CLAIMED",
@@ -338,6 +510,12 @@ draftsRouter.post(
             payload: { playerName: player.displayName },
           },
         });
+        await queueDraftNotification(
+          transaction,
+          draft,
+          event.id,
+          `👤 ${player.displayName} claimed their seat in ${draft.title}.`,
+        );
       },
     );
     return context.json(await presentDraft(draftId, actor.userId));
@@ -376,7 +554,7 @@ draftsRouter.delete(
         }
         await transaction.draftPlayer.update({ where: { id: player.id }, data: { userId: null } });
         await transaction.draft.update({ where: { id: draft.id }, data: { version: { increment: 1 } } });
-        await transaction.draftEvent.create({
+        const event = await transaction.draftEvent.create({
           data: {
             draftId: draft.id,
             type: "PLAYER_UNCLAIMED",
@@ -385,6 +563,12 @@ draftsRouter.delete(
             payload: { playerName: player.displayName },
           },
         });
+        await queueDraftNotification(
+          transaction,
+          draft,
+          event.id,
+          `↪ ${player.displayName} released their seat in ${draft.title}.`,
+        );
       },
       { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
     );
@@ -427,7 +611,7 @@ draftsRouter.delete(
 
         const playerCount = draft.players.length - 1;
         const config = { ...draftConfigSchema.parse(draft.config), playerCount };
-        await transaction.draftEvent.create({
+        const event = await transaction.draftEvent.create({
           data: {
             draftId: draft.id,
             type: "PLAYER_REMOVED",
@@ -436,6 +620,12 @@ draftsRouter.delete(
             payload: { playerName: player.displayName, wasClaimed: Boolean(player.userId) },
           },
         });
+        await queueDraftNotification(
+          transaction,
+          draft,
+          event.id,
+          `− Owner removed ${player.displayName} from ${draft.title}.`,
+        );
         await transaction.draftPlayer.delete({ where: { id: player.id } });
         await transaction.draftPlayer.updateMany({
           where: { draftId: draft.id, orderIndex: { gt: player.orderIndex } },
@@ -485,7 +675,7 @@ draftsRouter.post(
           where: { id: draft.id },
           data: { seed, version: { increment: 1 }, generatorVersion: GENERATOR_VERSION },
         });
-        await transaction.draftEvent.create({
+        const event = await transaction.draftEvent.create({
           data: {
             draftId: draft.id,
             type: "POOL_REGENERATED",
@@ -493,6 +683,12 @@ draftsRouter.post(
             payload: { seed },
           },
         });
+        await queueDraftNotification(
+          transaction,
+          draft,
+          event.id,
+          `⟳ Owner regenerated the option pool for ${draft.title}.`,
+        );
       },
       { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
     );

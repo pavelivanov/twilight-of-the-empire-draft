@@ -4,6 +4,8 @@ import { toast } from "sonner";
 import type { DraftConfig, PublicDraft } from "@imperium/domain";
 
 import { api, setDemoIdentity } from "@/lib/api";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Field, FieldContent, FieldDescription, FieldLabel } from "@/components/ui/field";
 import { cn } from "@/lib/utils";
 
 const initialPlayers = ["", "", "", "", "", ""];
@@ -11,9 +13,11 @@ const initialPlayers = ["", "", "", "", "", ""];
 export function SetupScreen({
   onCreated,
   onCancel,
+  telegramLaunchToken,
 }: {
   onCreated: (draft: PublicDraft) => void;
   onCancel: () => void;
+  telegramLaunchToken?: string;
 }) {
   const [title, setTitle] = useState("Friday Night Imperium");
   const [players, setPlayers] = useState(initialPlayers);
@@ -21,6 +25,9 @@ export function SetupScreen({
   const [factionCount, setFactionCount] = useState(12);
   const [bansEnabled, setBansEnabled] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const channelLaunch = Boolean(telegramLaunchToken);
+  const telegramAvailable = channelLaunch || (typeof window !== "undefined" && Boolean(window.Telegram?.WebApp.initData));
+  const [notifyChannel, setNotifyChannel] = useState(telegramAvailable);
   const activePlayers = players.slice(0, playerCount);
   const minimumFactionCount = bansEnabled ? playerCount * 2 : playerCount;
 
@@ -71,10 +78,30 @@ export function SetupScreen({
         title: title.trim(),
         players: activePlayers.map((displayName) => ({ displayName: displayName.trim() })),
         config,
+        telegramLaunchToken,
       });
+      let channelPickerRequested = false;
+      if (notifyChannel && !telegramLaunchToken) {
+        try {
+          await api.requestTelegramGroup(draft.slug);
+          channelPickerRequested = true;
+        } catch (error) {
+          toast.warning(
+            error instanceof Error
+              ? `Draft created, but the group picker could not open: ${error.message}`
+              : "Draft created, but the group picker could not open.",
+          );
+        }
+      }
       const creatorPlayer = draft.players.find((player) => player.isCurrentUser);
       if (creatorPlayer) localStorage.setItem("imperium-demo-creator-player", creatorPlayer.id);
-      toast.success("Pool generated · 9 slices");
+      toast.success(
+        telegramLaunchToken
+          ? "Draft created · group connected"
+          : channelPickerRequested
+          ? "Draft created · close the Mini App to choose the group"
+          : "Pool generated · 9 slices",
+      );
       onCreated(draft);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Could not create the draft");
@@ -326,6 +353,34 @@ export function SetupScreen({
               </div>
             </div>
           ))}
+        </div>
+
+        <div className="field-card">
+          <div className="field-card-head">
+            <div className="mono-label" style={{ fontSize: 9.5, letterSpacing: "0.14em" }}>
+              TELEGRAM UPDATES
+            </div>
+            <em>{channelLaunch ? "CONNECTED" : telegramAvailable ? "OPTIONAL" : "TELEGRAM ONLY"}</em>
+          </div>
+          <Field orientation="horizontal" data-disabled={!telegramAvailable || channelLaunch || undefined}>
+            <Checkbox
+              id="notify-telegram-channel"
+              name="notifyTelegramChannel"
+              checked={notifyChannel}
+              disabled={!telegramAvailable || channelLaunch}
+              onCheckedChange={setNotifyChannel}
+            />
+            <FieldContent>
+              <FieldLabel htmlFor="notify-telegram-channel">Post every action to a group</FieldLabel>
+              <FieldDescription>
+                {channelLaunch
+                  ? "This draft will be connected to the group where /newdraft was sent after Telegram verifies that you and the bot are administrators there."
+                  : telegramAvailable
+                  ? "After generation, Telegram sends a secure picker containing only groups you administer. The bot receives administrator access."
+                  : "Open this form from the Telegram Mini App to choose a notification group."}
+              </FieldDescription>
+            </FieldContent>
+          </Field>
         </div>
 
         <div className="hint-callout" style={{ margin: "10px 0 18px" }}>

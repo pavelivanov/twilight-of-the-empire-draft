@@ -1608,6 +1608,14 @@
     color: var(--soft);
   }
 
+  .slice-sheet-cluster {
+    display: flex;
+    justify-content: center;
+    width: calc(100% + 16px);
+    margin-inline: -8px;
+    padding: 10px 0 8px;
+  }
+
   .stat-duo {
     background: var(--card);
     border: 1px solid var(--line-2);
@@ -1915,6 +1923,10 @@
     animation: rise 0.2s ease;
   }
   .confirm-dock .btn-accent { flex: 1 1 auto; height: 48px; border-radius: 12px; }
+  .draft-confirm-dock {
+    position: static;
+    flex: 0 0 auto;
+  }
   .confirm-dock .btn-ghost-lg {
     flex: 0 0 auto;
     height: 48px;

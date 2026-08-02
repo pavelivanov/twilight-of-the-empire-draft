@@ -39,6 +39,11 @@ describe("table sizes", () => {
     };
 
     expect(createDraftSchema.parse(input).players).toHaveLength(3);
+    expect(
+      createDraftSchema.parse({ ...input, telegramLaunchToken: "00000000-0000-4000-8000-000000000000" })
+        .telegramLaunchToken,
+    ).toBe("00000000-0000-4000-8000-000000000000");
+    expect(() => createDraftSchema.parse({ ...input, telegramLaunchToken: "not-a-token" })).toThrow();
     expect(() => createDraftSchema.parse({ ...input, config: { ...config, playerCount: 4 } })).toThrow();
   });
 

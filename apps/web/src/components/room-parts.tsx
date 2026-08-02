@@ -465,8 +465,8 @@ export function SliceSheet({
                 </span>
               </div>
 
-              <div style={{ display: "flex", justifyContent: "center", padding: "18px 0 12px" }}>
-                <SliceCluster tiles={slice.tiles} size={74} />
+              <div className="slice-sheet-cluster">
+                <SliceCluster tiles={slice.tiles} fluid />
               </div>
 
               <div className="stat-duo">
@@ -666,6 +666,19 @@ export function ManageSheet({
     }
   }
 
+  async function requestTelegramGroup() {
+    setBusy(true);
+    try {
+      await api.requestTelegramGroup(draft.slug);
+      window.Telegram?.WebApp.HapticFeedback?.notificationOccurred("success");
+      toast.success("Group picker sent to your bot chat. Close the Mini App to choose.");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not open the group picker");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const removablePlayers = draft.players.filter(() => draft.players.length > 3);
   const pendingRemovePlayer =
     confirming && typeof confirming === "object"
@@ -745,6 +758,33 @@ export function ManageSheet({
                   ))}
               </div>
             </div>
+
+            {draft.canManage && (
+              <div className="manage-group">
+                <small>TELEGRAM</small>
+                <div className="manage-card">
+                  <button
+                    type="button"
+                    className="manage-row is-hot"
+                    disabled={!window.Telegram?.WebApp.initData || busy}
+                    onClick={() => void requestTelegramGroup()}
+                  >
+                    <i />
+                    <span className="manage-row-main">
+                      <strong>{draft.telegramChannel ? "Change notification group" : "Connect notification group"}</strong>
+                      <small>
+                        {draft.telegramChannel
+                          ? `Posting every action to ${draft.telegramChannel.title}.`
+                          : window.Telegram?.WebApp.initData
+                            ? "Choose from groups where you are an administrator."
+                            : "Open the draft in Telegram to choose a group."}
+                      </small>
+                    </span>
+                    <ChevronRightIcon className="chevron" aria-hidden="true" />
+                  </button>
+                </div>
+              </div>
+            )}
 
             {draft.canManage && (
               <div className="manage-group">

@@ -61,6 +61,7 @@ export type CreateDraftInput = {
   players: Array<{ displayName: string; telegramUsername?: string }>;
   config: DraftConfig;
   seed?: string;
+  telegramLaunchToken?: string;
 };
 
 export const api = {
@@ -70,6 +71,8 @@ export const api = {
   getDraft: (draftId: string) => request<PublicDraft>(`/api/drafts/${draftId}`),
   deleteDraft: (draftId: string) =>
     request<{ id: string; slug: string }>(`/api/drafts/${draftId}`, { method: "DELETE" }),
+  requestTelegramGroup: (draftId: string) =>
+    request<{ requested: true }>(`/api/drafts/${draftId}/telegram-channel-picker`, { method: "POST" }),
   claimPlayer: (draftId: string, playerId: string, version: number) =>
     request<PublicDraft>(`/api/drafts/${draftId}/players/${playerId}/claim`, {
       method: "POST",

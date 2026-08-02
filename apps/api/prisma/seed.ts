@@ -3,6 +3,7 @@ import { PrismaClient } from "@prisma/client";
 const prisma = new PrismaClient();
 
 await prisma.telegramUpdate.deleteMany();
+await prisma.telegramDraftLaunch.deleteMany();
 await prisma.notificationOutbox.deleteMany();
 await prisma.draftEvent.deleteMany();
 await prisma.draftOption.deleteMany();

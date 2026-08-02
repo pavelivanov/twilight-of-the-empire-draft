@@ -133,6 +133,7 @@ export const createDraftSchema = z.object({
     ),
   config: draftConfigSchema,
   seed: z.string().trim().min(1).max(80).optional(),
+  telegramLaunchToken: z.string().uuid().optional(),
 }).refine((input) => input.players.length === input.config.playerCount, {
   message: "Player count must match the configured table size",
   path: ["players"],
@@ -186,6 +187,10 @@ export type PublicDraft = {
   creatorUserId: string;
   currentUserId?: string | null;
   canManage: boolean;
+  telegramChannel?: {
+    title: string;
+    username?: string | null;
+  } | null;
   seed: string;
   config: DraftConfig;
   players: PublicPlayer[];

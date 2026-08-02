@@ -43,6 +43,12 @@ export async function presentDraft(
     creatorUserId: draft.creatorUserId,
     currentUserId,
     canManage: draft.creatorUserId === currentUserId,
+    telegramChannel: draft.telegramChatId
+      ? {
+          title: draft.telegramChatTitle ?? draft.telegramChatUsername ?? "Telegram group",
+          username: draft.telegramChatUsername,
+        }
+      : null,
     seed: draft.seed,
     config: draftConfigSchema.parse(draft.config),
     players: draft.players.map((player) => ({

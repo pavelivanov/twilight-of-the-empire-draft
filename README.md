@@ -5,8 +5,9 @@ Twilight Imperium Fourth Edition games.
 
 - The Telegram Mini App creates a draft, enrolls players, generates the option
   pool, accepts one choice at a time, and assembles the final map.
-- The Telegram bot connects a players group to its draft, announces accepted
-  actions, and calls out the next player.
+- The Telegram bot connects a players group to its
+  draft, announces every accepted player/creator action, and calls out the next
+  player.
 - The Hono API and PostgreSQL database verify identity, enforce draft rules,
   retain immutable history, and deliver bot notifications through a retryable
   outbox.
@@ -63,8 +64,8 @@ To reset local draft data:
 npm run db:seed
 ```
 
-This removes draft, event, outbox, Telegram update, and user rows from the local
-database. It does not touch schema migrations.
+This removes draft, event, outbox, Telegram update/launch, and user rows from
+the local database. It does not touch schema migrations.
 
 ## Deploy to Railway and Telegram
 
@@ -119,19 +120,27 @@ npm run telegram:webhook
 
 ### Telegram smoke test
 
-1. Open the bot privately and tap **Open draft** in its menu.
-2. Create the draft and copy the Telegram invite link from the lobby.
-3. Add the bot to the players group and send the command shown in the lobby:
+1. Add the bot to a group as an administrator.
+2. Send `/newdraft` in the group and tap **Create draft** in the bot's reply.
+3. Configure and create the draft. The API verifies that the signed Telegram
+   user and bot are group administrators, consumes the one-hour link, and
+   connects the group.
+4. Copy the draft's Telegram invite link for the players.
+5. Each player opens the Mini App invite and claims their named seat.
+6. Every accepted claim, release, removal, pool regeneration, ban, pick, undo,
+   and draft deletion should produce a group message.
+
+The Bot API does not expose a group-membership list to Mini Apps. The setup form
+therefore triggers Telegram's native filtered chat picker; Telegram renders the
+list and only offers groups where the creator can grant the bot administrator
+access. This is still available when creating from the bot menu instead of
+`/newdraft`. To connect an existing draft, add the bot to the group and send:
 
 ```text
 /draft <draft-link-code>
 ```
 
-4. Each player opens the Mini App invite and claims their named seat.
-5. Start the draft. Every accepted pick should produce a group message naming
-   the option and the next player.
-
-`/status` reports the latest draft linked to that group. Telegram production
+`/status` reports the latest draft linked to that chat. Telegram production
 authentication is mandatory; demo headers are rejected by the API.
 
 ## Repository

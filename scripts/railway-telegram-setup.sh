@@ -192,7 +192,7 @@ webhook_payload="$(WEBHOOK_URL="$WEBHOOK_URL" WEBHOOK_SECRET_VALUE="$WEBHOOK_SEC
 printf '%s' "$webhook_payload" | curl --fail-with-body --silent --show-error \
   --header 'content-type: application/json' --data-binary @- "$BOT_API/setWebhook" | telegram_response_ok setWebhook
 
-commands_payload='{"commands":[{"command":"draft","description":"Connect a draft to this group"},{"command":"status","description":"Show the connected draft status"}]}'
+commands_payload='{"commands":[{"command":"newdraft","description":"Create a draft for this group"},{"command":"draft","description":"Connect a draft to this group"},{"command":"status","description":"Show the connected draft status"}]}'
 printf '%s' "$commands_payload" | curl --fail-with-body --silent --show-error \
   --header 'content-type: application/json' --data-binary @- "$BOT_API/setMyCommands" | telegram_response_ok setMyCommands
 
@@ -217,4 +217,4 @@ EXPECTED_WEBHOOK_URL="$WEBHOOK_URL" node -e '
   console.log(`Pending Telegram updates: ${info.pending_update_count ?? 0}`);
 ' "$info_json"
 
-echo "Telegram setup is complete. Add @$BOT_USERNAME_VALUE to the players group and open the bot menu to create a draft."
+echo "Telegram setup is complete. Open the bot menu to create a draft and choose its notification group."

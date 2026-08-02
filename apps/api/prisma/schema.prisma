@@ -34,6 +34,7 @@ enum EventType {
   CHAT_BOUND
   PICK_REVERTED
   DRAFT_COMPLETED
+  DRAFT_DELETED
 }
 
 enum NotificationStatus {
@@ -56,46 +57,49 @@ model User {
 }
 
 model Draft {
-  id               String               @id @default(cuid())
-  slug             String               @unique
-  title            String
-  status           DraftStatus          @default(SETUP)
-  creatorUserId    String
-  telegramChatId   String?
-  playerCount      Int                  @default(6)
-  turnCursor       Int                  @default(0)
-  version          Int                  @default(0)
-  seed             String
-  generatorVersion String
-  config           Json
-  createdAt        DateTime             @default(now())
-  updatedAt        DateTime             @updatedAt
-  startedAt        DateTime?
-  completedAt      DateTime?
-  creator          User                 @relation("DraftCreator", fields: [creatorUserId], references: [id])
-  players          DraftPlayer[]
-  options          DraftOption[]
-  events           DraftEvent[]
-  outbox           NotificationOutbox[]
+  id                       String               @id @default(cuid())
+  slug                     String               @unique
+  title                    String
+  status                   DraftStatus          @default(SETUP)
+  creatorUserId            String
+  telegramChatId           String?
+  telegramChatTitle        String?
+  telegramChatUsername     String?
+  telegramChannelRequestId Int?                 @unique
+  playerCount              Int                  @default(6)
+  turnCursor               Int                  @default(0)
+  version                  Int                  @default(0)
+  seed                     String
+  generatorVersion         String
+  config                   Json
+  createdAt                DateTime             @default(now())
+  updatedAt                DateTime             @updatedAt
+  startedAt                DateTime?
+  completedAt              DateTime?
+  creator                  User                 @relation("DraftCreator", fields: [creatorUserId], references: [id])
+  players                  DraftPlayer[]
+  options                  DraftOption[]
+  events                   DraftEvent[]
+  outbox                   NotificationOutbox[]
 
   @@index([creatorUserId])
   @@index([telegramChatId])
 }
 
 model DraftPlayer {
-  id                String        @id @default(cuid())
-  draftId           String
-  userId            String?
-  displayName       String
-  telegramUsername  String?
-  orderIndex        Int
-  color             String
-  createdAt         DateTime      @default(now())
-  draft             Draft         @relation(fields: [draftId], references: [id], onDelete: Cascade)
-  user              User?         @relation(fields: [userId], references: [id])
-  selectedOptions   DraftOption[] @relation("SelectedBy")
-  bannedOptions     DraftOption[] @relation("BannedBy")
-  events            DraftEvent[]
+  id               String        @id @default(cuid())
+  draftId          String
+  userId           String?
+  displayName      String
+  telegramUsername String?
+  orderIndex       Int
+  color            String
+  createdAt        DateTime      @default(now())
+  draft            Draft         @relation(fields: [draftId], references: [id], onDelete: Cascade)
+  user             User?         @relation(fields: [userId], references: [id])
+  selectedOptions  DraftOption[] @relation("SelectedBy")
+  bannedOptions    DraftOption[] @relation("BannedBy")
+  events           DraftEvent[]
 
   @@unique([draftId, orderIndex])
   @@unique([draftId, userId])
@@ -124,17 +128,17 @@ model DraftOption {
 }
 
 model DraftEvent {
-  id                 String                @id @default(cuid())
+  id                 String               @id @default(cuid())
   draftId            String
   type               EventType
   actorUserId        String?
   playerId           String?
-  idempotencyKey     String?               @unique
+  idempotencyKey     String?              @unique
   payload            Json
-  createdAt          DateTime              @default(now())
-  draft              Draft                 @relation(fields: [draftId], references: [id], onDelete: Cascade)
-  actor              User?                 @relation("EventActor", fields: [actorUserId], references: [id])
-  player             DraftPlayer?          @relation(fields: [playerId], references: [id])
+  createdAt          DateTime             @default(now())
+  draft              Draft                @relation(fields: [draftId], references: [id], onDelete: Cascade)
+  actor              User?                @relation("EventActor", fields: [actorUserId], references: [id])
+  player             DraftPlayer?         @relation(fields: [playerId], references: [id])
   notificationOutbox NotificationOutbox[]
 
   @@index([draftId, createdAt])
@@ -142,8 +146,8 @@ model DraftEvent {
 
 model NotificationOutbox {
   id            String             @id @default(cuid())
-  draftId       String
-  eventId       String
+  draftId       String?
+  eventId       String?
   chatId        String
   message       String
   status        NotificationStatus @default(PENDING)
@@ -152,8 +156,8 @@ model NotificationOutbox {
   lastError     String?
   createdAt     DateTime           @default(now())
   sentAt        DateTime?
-  draft         Draft              @relation(fields: [draftId], references: [id], onDelete: Cascade)
-  event         DraftEvent         @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  draft         Draft?             @relation(fields: [draftId], references: [id], onDelete: SetNull)
+  event         DraftEvent?        @relation(fields: [eventId], references: [id], onDelete: SetNull)
 
   @@index([status, nextAttemptAt])
 }
@@ -161,4 +165,15 @@ model NotificationOutbox {
 model TelegramUpdate {
   updateId   String   @id
   receivedAt DateTime @default(now())
+}
+
+model TelegramDraftLaunch {
+  token                   String   @id
+  telegramChatId          String
+  telegramChatTitle       String?
+  telegramChatUsername    String?
+  createdAt               DateTime @default(now())
+  expiresAt               DateTime
+
+  @@index([expiresAt])
 }

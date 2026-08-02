@@ -7,18 +7,21 @@ Fourth Edition.
 
 It has three deployable responsibilities:
 
-1. **Telegram bot** — lives in a players group, links the group to a draft,
-   announces every accepted action, mentions the next player, exposes status and
-   creator-only recovery commands.
+1. **Telegram bot** — lives in a players group, links that group to a draft,
+   announces every accepted
+   action, mentions the next player, and exposes status/recovery commands.
 2. **Telegram Mini App** — lets one player create and configure a draft, enroll
    players, start it, and lets each authenticated player select one faction, one
    five-system slice, and one table position.
 3. **API and database** — owns identity verification, generation, the draft state
    machine, concurrency control, immutable history, and notification delivery.
 
-Telegram groups and supergroups are the collaboration surface. A broadcast-only
-Telegram channel is not sufficient because players must have Telegram user
-identities and interact with the bot/Mini App.
+The Mini App remains the authenticated player interaction surface. A broadcast
+group carries notifications, but it cannot replace signed player identity and
+actions inside the Mini App. Telegram's native chat picker filters choices to
+groups where the creator can grant bot administrator access. A group can also
+initiate creation with `/newdraft`; its one-time Mini App link is bound only
+after both creator and bot administrator status are verified server-side.
 
 ## What the prototype proved
 
@@ -27,7 +30,7 @@ identities and interact with the bot/Mini App.
 - A player may take faction, slice, and position in any order, but exactly once.
 - The reference five-system slice geometry and six-player final map geometry are
   understood and testable.
-- Direct Mini App links are suitable for posting in a group.
+- Direct Mini App links are suitable for posting in a players group.
 - Signed Telegram `initData` is the correct identity boundary for the web app.
 - Real tile artwork is necessary for players to judge slices and the final map.
 
@@ -144,6 +147,8 @@ and retains the stronger constraint checks expected from Milty drafting.
 - Draft writes use a serializable transaction and a monotonically increasing
   `version`.
 - Telegram webhook update IDs are stored for idempotency.
+- Group launch tokens expire after one hour, are consumed atomically, and do
+  not bypass signed Mini App identity or group administrator checks.
 - Notification delivery uses an outbox with attempts, next-attempt time, and
   terminal failure state.
 - API errors use stable codes; unexpected details are logged but not returned.
