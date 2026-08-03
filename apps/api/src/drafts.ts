@@ -256,8 +256,14 @@ draftsRouter.get("/", async (context) => {
     select: { id: true },
   });
   await Promise.all(legacyDrafts.map((draft) => activateLegacyDraft(draft.id)));
+  const visibleToActor = {
+    OR: [
+      { creatorUserId: actor.userId },
+      { players: { some: { userId: actor.userId } } },
+    ],
+  } satisfies Prisma.DraftWhereInput;
   const drafts = await prisma.draft.findMany({
-    where: { creatorUserId: actor.userId },
+    where: visibleToActor,
     orderBy: { updatedAt: "desc" },
     select: {
       id: true,
@@ -539,7 +545,7 @@ draftsRouter.delete(
     const input = context.req.valid("query");
     const draftId = context.req.param("draftId");
     const playerId = context.req.param("playerId");
-    await prisma.$transaction(
+    await withSerializableRetry(
       async (transaction) => {
         const draft = await transaction.draft.findFirst({
           where: { OR: [{ id: draftId }, { slug: draftId }] },
@@ -579,7 +585,6 @@ draftsRouter.delete(
           `↪ ${player.displayName} released their seat in ${draft.title}.`,
         );
       },
-      { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
     );
     return context.json(await presentDraft(draftId, actor.userId));
   },
@@ -593,7 +598,7 @@ draftsRouter.delete(
     const input = context.req.valid("query");
     const draftId = context.req.param("draftId");
     const playerId = context.req.param("playerId");
-    await prisma.$transaction(
+    await withSerializableRetry(
       async (transaction) => {
         const draft = await transaction.draft.findFirst({
           where: { OR: [{ id: draftId }, { slug: draftId }] },
@@ -649,7 +654,6 @@ draftsRouter.delete(
           data: { playerCount, config, version: { increment: 1 } },
         });
       },
-      { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
     );
     return context.json(await presentDraft(draftId, actor.userId));
   },
@@ -662,7 +666,7 @@ draftsRouter.post(
     const actor = context.get("actor");
     const input = context.req.valid("json");
     const draftId = context.req.param("draftId");
-    await prisma.$transaction(
+    await withSerializableRetry(
       async (transaction) => {
         const draft = await transaction.draft.findFirst({
           where: { OR: [{ id: draftId }, { slug: draftId }] },
@@ -699,7 +703,6 @@ draftsRouter.post(
           `⟳ Owner regenerated the option pool for ${draft.title}.`,
         );
       },
-      { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
     );
     return context.json(await presentDraft(draftId, actor.userId));
   },
@@ -712,7 +715,7 @@ draftsRouter.post(
     const actor = context.get("actor");
     const input = context.req.valid("json");
     const draftId = context.req.param("draftId");
-    await prisma.$transaction(
+    await withSerializableRetry(
       async (transaction) => {
         const draft = await transaction.draft.findFirst({
           where: { OR: [{ id: draftId }, { slug: draftId }] },
@@ -753,7 +756,6 @@ draftsRouter.post(
           });
         }
       },
-      { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
     );
     return context.json(await presentDraft(draftId, actor.userId));
   },
@@ -863,92 +865,102 @@ draftsRouter.post("/:draftId/picks", zValidator("json", pickSchema), async (cont
   const actor = context.get("actor");
   const input = context.req.valid("json");
   const draftId = context.req.param("draftId");
-  const existingEvent = await prisma.draftEvent.findUnique({ where: { idempotencyKey: input.idempotencyKey } });
-  if (!existingEvent) {
-    await prisma.$transaction(
-      async (transaction) => {
-        const draft = await transaction.draft.findFirst({
-          where: { OR: [{ id: draftId }, { slug: draftId }] },
-          include: {
-            players: { orderBy: { orderIndex: "asc" } },
-            options: true,
-          },
-        });
-        if (!draft) throw new ApiError(404, "DRAFT_NOT_FOUND", "Draft not found");
-        if (draft.status !== "DRAFTING") throw new ApiError(409, "INVALID_STATUS", "The draft is not accepting picks");
-        if (draft.version !== input.version) throw new ApiError(409, "STALE_DRAFT", "The draft changed; refresh and try again");
-        const turnOrder = createTurnOrder(draft.players.map((player) => player.id));
-        const player = draft.players.find((candidate) => candidate.id === turnOrder[draft.turnCursor]);
-        if (!player) throw new ApiError(409, "INVALID_TURN", "The active draft turn is invalid");
-        const performedByCreator = draft.creatorUserId === actor.userId && player.userId !== actor.userId;
-        if (player.userId !== actor.userId && !performedByCreator) {
-          throw new ApiError(403, "NOT_YOUR_TURN", "It is not your turn");
-        }
-        const option = draft.options.find((candidate) => candidate.id === input.optionId);
-        if (!option) throw new ApiError(404, "OPTION_NOT_FOUND", "Draft option not found");
-        if (option.bannedByPlayerId) throw new ApiError(409, "OPTION_BANNED", "That faction was banned before the draft");
-        if (option.selectedByPlayerId) throw new ApiError(409, "OPTION_TAKEN", "That option has already been selected");
-        if (
-          draft.options.some(
-            (candidate) => candidate.kind === option.kind && candidate.selectedByPlayerId === player.id,
-          )
-        ) {
-          throw new ApiError(409, "KIND_ALREADY_SELECTED", `You already selected a ${option.kind.toLowerCase()}`);
-        }
-        const claimed = await transaction.draftOption.updateMany({
-          where: { id: option.id, selectedByPlayerId: null },
-          data: { selectedByPlayerId: player.id, selectedAt: new Date() },
-        });
-        if (claimed.count !== 1) throw new ApiError(409, "OPTION_TAKEN", "That option was just selected");
-        const nextCursor = draft.turnCursor + 1;
-        const completed = nextCursor === turnOrder.length;
-        const nextPlayer = draft.players.find((candidate) => candidate.id === turnOrder[nextCursor]);
-        const event = await transaction.draftEvent.create({
-          data: {
-            draftId: draft.id,
-            type: "OPTION_SELECTED",
-            actorUserId: actor.userId,
-            playerId: player.id,
-            idempotencyKey: input.idempotencyKey,
-            payload: {
-              optionId: option.id,
-              optionKind: option.kind,
-              optionKey: option.key,
-              optionLabel: option.label,
-              playerName: player.displayName,
-              turnIndex: draft.turnCursor,
-              performedByCreator,
-            },
-          },
-        });
-        await transaction.draft.update({
-          where: { id: draft.id },
-          data: {
-            turnCursor: nextCursor,
-            version: { increment: 1 },
-            status: completed ? "COMPLETE" : "DRAFTING",
-            completedAt: completed ? new Date() : undefined,
-          },
-        });
-        if (draft.telegramChatId) {
-          const nextLine = completed
-            ? "The draft is complete. Open the Mini App to inspect the final map."
-            : `${nextPlayer!.telegramUsername ? `@${nextPlayer!.telegramUsername}` : nextPlayer!.displayName}, you are next.`;
-          await transaction.notificationOutbox.create({
-            data: {
-              draftId: draft.id,
-              eventId: event.id,
-              chatId: draft.telegramChatId,
-              message: performedByCreator
-                ? `◆ Owner selected ${option.label} (${option.kind.toLowerCase()}) for ${player.displayName}.\n${nextLine}`
-                : `◆ ${player.displayName} selected ${option.label} (${option.kind.toLowerCase()}).\n${nextLine}`,
-            },
-          });
-        }
+  await withSerializableRetry(async (transaction) => {
+    const existingEvent = await transaction.draftEvent.findUnique({
+      where: { idempotencyKey: input.idempotencyKey },
+      select: { draftId: true },
+    });
+    if (existingEvent) {
+      const requestedDraft = await transaction.draft.findFirst({
+        where: { OR: [{ id: draftId }, { slug: draftId }] },
+        select: { id: true },
+      });
+      if (!requestedDraft) throw new ApiError(404, "DRAFT_NOT_FOUND", "Draft not found");
+      if (existingEvent.draftId !== requestedDraft.id) {
+        throw new ApiError(409, "IDEMPOTENCY_KEY_REUSED", "That request key was already used for another draft");
+      }
+      return;
+    }
+
+    const draft = await transaction.draft.findFirst({
+      where: { OR: [{ id: draftId }, { slug: draftId }] },
+      include: {
+        players: { orderBy: { orderIndex: "asc" } },
+        options: true,
       },
-      { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
-    );
-  }
+    });
+    if (!draft) throw new ApiError(404, "DRAFT_NOT_FOUND", "Draft not found");
+    if (draft.status !== "DRAFTING") throw new ApiError(409, "INVALID_STATUS", "The draft is not accepting picks");
+    if (draft.version !== input.version) throw new ApiError(409, "STALE_DRAFT", "The draft changed; refresh and try again");
+    const turnOrder = createTurnOrder(draft.players.map((player) => player.id));
+    const player = draft.players.find((candidate) => candidate.id === turnOrder[draft.turnCursor]);
+    if (!player) throw new ApiError(409, "INVALID_TURN", "The active draft turn is invalid");
+    const performedByCreator = draft.creatorUserId === actor.userId && player.userId !== actor.userId;
+    if (player.userId !== actor.userId && !performedByCreator) {
+      throw new ApiError(403, "NOT_YOUR_TURN", "It is not your turn");
+    }
+    const option = draft.options.find((candidate) => candidate.id === input.optionId);
+    if (!option) throw new ApiError(404, "OPTION_NOT_FOUND", "Draft option not found");
+    if (option.bannedByPlayerId) throw new ApiError(409, "OPTION_BANNED", "That faction was banned before the draft");
+    if (option.selectedByPlayerId) throw new ApiError(409, "OPTION_TAKEN", "That option has already been selected");
+    if (
+      draft.options.some(
+        (candidate) => candidate.kind === option.kind && candidate.selectedByPlayerId === player.id,
+      )
+    ) {
+      throw new ApiError(409, "KIND_ALREADY_SELECTED", `You already selected a ${option.kind.toLowerCase()}`);
+    }
+    const claimed = await transaction.draftOption.updateMany({
+      where: { id: option.id, selectedByPlayerId: null },
+      data: { selectedByPlayerId: player.id, selectedAt: new Date() },
+    });
+    if (claimed.count !== 1) throw new ApiError(409, "OPTION_TAKEN", "That option was just selected");
+    const nextCursor = draft.turnCursor + 1;
+    const completed = nextCursor === turnOrder.length;
+    const nextPlayer = draft.players.find((candidate) => candidate.id === turnOrder[nextCursor]);
+    const event = await transaction.draftEvent.create({
+      data: {
+        draftId: draft.id,
+        type: "OPTION_SELECTED",
+        actorUserId: actor.userId,
+        playerId: player.id,
+        idempotencyKey: input.idempotencyKey,
+        payload: {
+          optionId: option.id,
+          optionKind: option.kind,
+          optionKey: option.key,
+          optionLabel: option.label,
+          playerName: player.displayName,
+          turnIndex: draft.turnCursor,
+          performedByCreator,
+        },
+      },
+    });
+    await transaction.draft.update({
+      where: { id: draft.id },
+      data: {
+        turnCursor: nextCursor,
+        version: { increment: 1 },
+        status: completed ? "COMPLETE" : "DRAFTING",
+        completedAt: completed ? new Date() : undefined,
+      },
+    });
+    if (draft.telegramChatId) {
+      const nextLine = completed
+        ? "The draft is complete. Open the Mini App to inspect the final map."
+        : `${nextPlayer!.telegramUsername ? `@${nextPlayer!.telegramUsername}` : nextPlayer!.displayName}, you are next.`;
+      await transaction.notificationOutbox.create({
+        data: {
+          draftId: draft.id,
+          eventId: event.id,
+          chatId: draft.telegramChatId,
+          message: performedByCreator
+            ? `◆ Owner selected ${option.label} (${option.kind.toLowerCase()}) for ${player.displayName}.\n${nextLine}`
+            : `◆ ${player.displayName} selected ${option.label} (${option.kind.toLowerCase()}).\n${nextLine}`,
+        },
+      });
+    }
+  });
   return context.json(await presentDraft(draftId, actor.userId));
 });
 
@@ -959,7 +971,7 @@ draftsRouter.post(
     const actor = context.get("actor");
     const input = context.req.valid("json");
     const draftId = context.req.param("draftId");
-    await prisma.$transaction(
+    await withSerializableRetry(
       async (transaction) => {
         const draft = await transaction.draft.findFirst({
           where: { OR: [{ id: draftId }, { slug: draftId }] },
@@ -1057,7 +1069,6 @@ draftsRouter.post(
           });
         }
       },
-      { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
     );
     return context.json(await presentDraft(draftId, actor.userId));
   },

@@ -156,6 +156,48 @@ describe.sequential("draft lifecycle", () => {
     expect(draft.status).toBe("DRAFTING");
   });
 
+  it("lists drafts where the current user owns a claimed seat", async () => {
+    if (!draft) throw new Error("Draft was not created");
+    const participant = draft.players.find((player) => player.id !== creatorPlayerId)!;
+    const response = await app.request("/api/drafts", {
+      headers: jsonHeaders(participant.id, participant.displayName),
+    });
+    expect(response.status).toBe(200);
+    const summaries = (await response.json()) as Array<{ slug: string }>;
+    expect(summaries).toContainEqual(expect.objectContaining({ slug: draft.slug }));
+  });
+
+  it("applies concurrent retries with the same idempotency key exactly once", async () => {
+    if (!draft) throw new Error("Draft was not created");
+    const active = draft.players.find((player) => player.id === draft!.activePlayerId)!;
+    const missingKind = (["FACTION", "SLICE", "POSITION"] as const).find(
+      (kind) => !active.picks[kind.toLowerCase() as keyof typeof active.picks],
+    )!;
+    const option = draft.options.find(
+      (candidate) => candidate.kind === missingKind && !candidate.selectedByPlayerId,
+    )!;
+    const idempotencyKey = crypto.randomUUID();
+    const request = () =>
+      app.request(`/api/drafts/${draft!.slug}/picks`, {
+        method: "POST",
+        headers: jsonHeaders(creatorIdentity, "Alice"),
+        body: JSON.stringify({ optionId: option.id, version: draft!.version, idempotencyKey }),
+      });
+
+    const [firstResponse, secondResponse] = await Promise.all([request(), request()]);
+    expect(firstResponse.status).toBe(200);
+    expect(secondResponse.status).toBe(200);
+    const [firstDraft, secondDraft] = await Promise.all([
+      responseDraft(firstResponse),
+      responseDraft(secondResponse),
+    ]);
+    expect(secondDraft.turnCursor).toBe(firstDraft.turnCursor);
+    expect(
+      await prisma.draftEvent.count({ where: { draftId: draft.id, idempotencyKey } }),
+    ).toBe(1);
+    draft = firstDraft;
+  });
+
   it("atomically accepts all remaining picks", async () => {
     if (!draft) throw new Error("Draft was not created");
 
@@ -231,7 +273,7 @@ describe.sequential("legacy draft compatibility", () => {
         body: JSON.stringify({
           title: `Legacy ${runId}`,
           players: ["Alice", "Bob", "Cara"].map((displayName) => ({ displayName })),
-          seed: `legacy-${runId}`,
+          seed: "integration-lifecycle",
           config: { playerCount: 3, sliceCount: 9, factionCount: 12 },
         }),
       }),
@@ -783,6 +825,186 @@ describe.sequential("group command draft launch", () => {
     await prisma.notificationOutbox.deleteMany({ where: { chatId: telegramChatId } });
     await prisma.telegramDraftLaunch.deleteMany({ where: { token } });
     await prisma.user.deleteMany({ where: { telegramId: String(telegramUserId) } });
+  });
+});
+
+describe.sequential("Telegram webhook reliability", () => {
+  const botToken = "123456789:webhook-test-token";
+  const webhookSecret = `webhook-${runId}`;
+
+  it("releases a failed update so Telegram can retry it", async () => {
+    const telegramUserId = 8_100_000_101;
+    const updateId = 8_200_000_101;
+    const originalBotToken = env.BOT_TOKEN;
+    const originalWebhookSecret = env.WEBHOOK_SECRET;
+    let telegramHealthy = false;
+    const fetchMock = vi.fn(async () =>
+      new Response(
+        JSON.stringify(
+          telegramHealthy
+            ? { ok: true, result: { message_id: 1 } }
+            : { ok: false, description: "temporary Telegram failure" },
+        ),
+        {
+          status: telegramHealthy ? 200 : 500,
+          headers: { "content-type": "application/json" },
+        },
+      ),
+    );
+    env.BOT_TOKEN = botToken;
+    env.WEBHOOK_SECRET = webhookSecret;
+    vi.stubGlobal("fetch", fetchMock);
+
+    const request = () =>
+      app.request("/api/telegram/webhook", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-telegram-bot-api-secret-token": webhookSecret,
+        },
+        body: JSON.stringify({
+          update_id: updateId,
+          message: {
+            chat: { id: telegramUserId, type: "private" },
+            from: { id: telegramUserId, first_name: "Retry" },
+            text: "/status",
+          },
+        }),
+      });
+
+    try {
+      const failed = await request();
+      expect(failed.status).toBe(500);
+      expect(await prisma.telegramUpdate.findUnique({ where: { updateId: String(updateId) } })).toBeNull();
+
+      telegramHealthy = true;
+      const retried = await request();
+      expect(retried.status).toBe(200);
+      expect(await prisma.telegramUpdate.findUnique({ where: { updateId: String(updateId) } })).not.toBeNull();
+
+      const fetchCallsAfterRetry = fetchMock.mock.calls.length;
+      const duplicate = await request();
+      expect(duplicate.status).toBe(200);
+      await expect(duplicate.json()).resolves.toEqual({ ok: true, duplicate: true });
+      expect(fetchMock).toHaveBeenCalledTimes(fetchCallsAfterRetry);
+    } finally {
+      env.BOT_TOKEN = originalBotToken;
+      env.WEBHOOK_SECRET = originalWebhookSecret;
+      vi.unstubAllGlobals();
+      await prisma.telegramUpdate.deleteMany({ where: { updateId: String(updateId) } });
+      await prisma.user.deleteMany({
+        where: { telegramId: { in: [String(telegramUserId), `demo:${telegramUserId}`] } },
+      });
+    }
+  });
+
+  it("requires the creator and bot to be group administrators before binding", async () => {
+    const telegramUserId = 8_100_000_102;
+    const telegramChatId = -1_008_100_000_102;
+    const botUserId = 9_900_000_102;
+    const deniedUpdateId = 8_200_000_102;
+    const acceptedUpdateId = 8_200_000_103;
+    const originalBotToken = env.BOT_TOKEN;
+    const originalWebhookSecret = env.WEBHOOK_SECRET;
+    let userIsAdministrator = false;
+    let createdDraftId: string | undefined;
+    env.BOT_TOKEN = botToken;
+    env.WEBHOOK_SECRET = webhookSecret;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+        const method = String(input).split("/").at(-1);
+        const payload = JSON.parse(String(init?.body ?? "{}")) as { user_id?: number };
+        const result =
+          method === "getMe"
+            ? { id: botUserId }
+            : method === "getChat"
+              ? { id: telegramChatId, type: "supergroup", title: "Audit Council", username: "audit_council" }
+              : method === "getChatMember"
+                ? {
+                    status:
+                      payload.user_id === telegramUserId && !userIsAdministrator
+                        ? "member"
+                        : "administrator",
+                    can_post_messages: true,
+                  }
+                : { message_id: 1 };
+        return new Response(JSON.stringify({ ok: true, result }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }),
+    );
+
+    try {
+      const creator = await prisma.user.create({
+        data: { telegramId: String(telegramUserId), displayName: "Telegram Creator" },
+      });
+      const created = await prisma.draft.create({
+        data: {
+          slug: `webhook-binding-${runId}`,
+          title: `Webhook binding ${runId}`,
+          status: "DRAFTING",
+          creatorUserId: creator.id,
+          playerCount: 3,
+          seed: `webhook-binding-${runId}`,
+          generatorVersion: "integration-test",
+          config: { playerCount: 3, sliceCount: 9, factionCount: 12 },
+        },
+      });
+      createdDraftId = created.id;
+
+      const sendDraftCommand = (updateId: number) =>
+        app.request("/api/telegram/webhook", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-telegram-bot-api-secret-token": webhookSecret,
+          },
+          body: JSON.stringify({
+            update_id: updateId,
+            message: {
+              chat: { id: telegramChatId, type: "supergroup", title: "Audit Council" },
+              from: { id: telegramUserId, first_name: "Telegram", last_name: "Creator" },
+              text: `/draft ${created.slug}`,
+            },
+          }),
+        });
+
+      const denied = await sendDraftCommand(deniedUpdateId);
+      expect(denied.status).toBe(200);
+      expect(
+        await prisma.draft.findUnique({ where: { id: created.id }, select: { telegramChatId: true } }),
+      ).toEqual({ telegramChatId: null });
+
+      userIsAdministrator = true;
+      const accepted = await sendDraftCommand(acceptedUpdateId);
+      expect(accepted.status).toBe(200);
+      expect(
+        await prisma.draft.findUnique({
+          where: { id: created.id },
+          select: { telegramChatId: true, telegramChatTitle: true, telegramChatUsername: true },
+        }),
+      ).toEqual({
+        telegramChatId: String(telegramChatId),
+        telegramChatTitle: "Audit Council",
+        telegramChatUsername: "audit_council",
+      });
+      expect(
+        await prisma.draftEvent.count({ where: { draftId: created.id, type: "CHAT_BOUND" } }),
+      ).toBe(1);
+    } finally {
+      env.BOT_TOKEN = originalBotToken;
+      env.WEBHOOK_SECRET = originalWebhookSecret;
+      vi.unstubAllGlobals();
+      await prisma.telegramUpdate.deleteMany({
+        where: { updateId: { in: [String(deniedUpdateId), String(acceptedUpdateId)] } },
+      });
+      if (createdDraftId) await prisma.draft.deleteMany({ where: { id: createdDraftId } });
+      await prisma.user.deleteMany({
+        where: { telegramId: { in: [String(telegramUserId), `demo:${telegramUserId}`] } },
+      });
+    }
   });
 });
 
