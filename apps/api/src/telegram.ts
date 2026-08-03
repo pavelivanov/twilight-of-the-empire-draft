@@ -308,6 +308,14 @@ async function sendGroupDraftLaunch(message: TelegramMessage): Promise<void> {
   }
 }
 
+async function releaseFailedTelegramUpdate(updateId: string): Promise<void> {
+  try {
+    await prisma.telegramUpdate.deleteMany({ where: { updateId } });
+  } catch (error) {
+    console.error("Could not release failed Telegram update", error);
+  }
+}
+
 telegramRouter.post("/webhook", async (context) => {
   if (!env.WEBHOOK_SECRET || context.req.header("x-telegram-bot-api-secret-token") !== env.WEBHOOK_SECRET) {
     throw new ApiError(401, "INVALID_WEBHOOK_SECRET", "Invalid webhook secret");
@@ -321,123 +329,142 @@ telegramRouter.post("/webhook", async (context) => {
     }
     throw error;
   }
-  const message = update.message;
-  if (!message) return context.json({ ok: true });
-  const [rawCommand, argument] = message.text?.trim().split(/\s+/, 2) ?? [];
-  const command = rawCommand?.split("@", 1)[0]?.toLocaleLowerCase();
+  try {
+    const message = update.message;
+    if (!message) return context.json({ ok: true });
+    const [rawCommand, argument] = message.text?.trim().split(/\s+/, 2) ?? [];
+    const command = rawCommand?.split("@", 1)[0]?.toLocaleLowerCase();
 
-  if (command === "/newdraft") {
-    try {
+    if (command === "/newdraft") {
       await sendGroupDraftLaunch(message);
-    } catch (error) {
-      await prisma.telegramUpdate.deleteMany({ where: { updateId: String(update.update_id) } });
-      throw error;
+      return context.json({ ok: true });
     }
-    return context.json({ ok: true });
-  }
 
-  if (!message.from) return context.json({ ok: true });
-  const user = await prisma.user.upsert({
-    where: { telegramId: String(message.from.id) },
-    create: {
-      telegramId: String(message.from.id),
-      displayName: [message.from.first_name, message.from.last_name].filter(Boolean).join(" "),
-      username: message.from.username,
-    },
-    update: {
-      displayName: [message.from.first_name, message.from.last_name].filter(Boolean).join(" "),
-      username: message.from.username,
-    },
-  });
-
-  if (message.chat_shared) {
-    try {
-      await bindSharedGroup(message, user);
-    } catch (error) {
-      console.error("Telegram group binding failed", error);
-      await prisma.telegramUpdate.deleteMany({ where: { updateId: String(update.update_id) } });
-      throw error;
-    }
-    return context.json({ ok: true });
-  }
-  if (!message.text) return context.json({ ok: true });
-
-  if (command === "/start") {
-    if (argument?.startsWith("web_") && message.chat.type === "private") {
-      const result = await claimBrowserSession(argument.slice(4), user.id);
-      await sendTelegramMessage(
-        String(message.chat.id),
-        result === "expired"
-          ? "That browser sign-in link has expired. Return to the website and request a new one."
-          : "Browser connected. You can return to Imperium Draft and use the full app there.",
-      );
-    } else {
-      await sendTelegramMessage(
-        String(message.chat.id),
-        `Create or join a Twilight Imperium draft in the Mini App:\n${miniAppLink()}`,
-      );
-    }
-  } else if (command === "/draft" && !argument) {
-    await sendTelegramMessage(String(message.chat.id), "Usage: /draft <draft-link-code>");
-  } else if (command === "/draft" && argument) {
-    const draft = await prisma.draft.findUnique({ where: { slug: argument } });
-    if (!draft) {
-      await sendTelegramMessage(String(message.chat.id), "I could not find that draft.");
-    } else if (draft.creatorUserId !== user.id) {
-      await sendTelegramMessage(String(message.chat.id), "Only the draft creator can connect it to this chat.");
-    } else if (message.chat.type === "private") {
-      await sendTelegramMessage(
-        String(message.chat.id),
-        "Use the group picker in the Mini App, or send this command in a group.",
-      );
-    } else {
-      await prisma.draft.update({
-        where: { id: draft.id },
-        data: {
-          telegramChatId: String(message.chat.id),
-          telegramChatTitle: message.chat.title,
-          telegramChatUsername: message.chat.username,
-          telegramChannelRequestId: null,
-        },
-      });
-      await prisma.draftEvent.create({
-        data: {
-          draftId: draft.id,
-          actorUserId: user.id,
-          type: "CHAT_BOUND",
-          payload: { chatId: String(message.chat.id) },
-        },
-      });
-      await sendTelegramMessage(
-        String(message.chat.id),
-        `Connected to ${draft.title}.\nOpen the draft: ${miniAppLink(draft.slug)}`,
-      );
-    }
-  } else if (command === "/status") {
-    const draft = await prisma.draft.findFirst({
-      where: { telegramChatId: String(message.chat.id), status: { in: ["SETUP", "BANNING", "DRAFTING", "COMPLETE"] } },
-      orderBy: { createdAt: "desc" },
-      include: {
-        players: { orderBy: { orderIndex: "asc" } },
-        options: {
-          where: { kind: "FACTION", bannedByPlayerId: { not: null } },
-          select: { id: true },
-        },
+    if (!message.from) return context.json({ ok: true });
+    const user = await prisma.user.upsert({
+      where: { telegramId: String(message.from.id) },
+      create: {
+        telegramId: String(message.from.id),
+        displayName: [message.from.first_name, message.from.last_name].filter(Boolean).join(" "),
+        username: message.from.username,
+      },
+      update: {
+        displayName: [message.from.first_name, message.from.last_name].filter(Boolean).join(" "),
+        username: message.from.username,
       },
     });
-    const progress = draft
-      ? draft.status === "BANNING"
-        ? `${draft.options.length}/${draft.players.length} bans locked`
-        : `${draft.turnCursor}/${draft.players.length * 3} choices`
-      : "";
-    await sendTelegramMessage(
-      String(message.chat.id),
-      draft
-        ? `${draft.title}: ${draft.status.toLowerCase()}, ${progress}.\n${miniAppLink(draft.slug)}`
-        : "This chat is not connected to an active draft. Use /draft <draft-link-code>.",
-    );
+
+    if (message.chat_shared) {
+      await bindSharedGroup(message, user);
+      return context.json({ ok: true });
+    }
+    if (!message.text) return context.json({ ok: true });
+
+    if (command === "/start") {
+      if (argument?.startsWith("web_") && message.chat.type === "private") {
+        const result = await claimBrowserSession(argument.slice(4), user.id);
+        await sendTelegramMessage(
+          String(message.chat.id),
+          result === "expired"
+            ? "That browser sign-in link has expired. Return to the website and request a new one."
+            : "Browser connected. You can return to Imperium Draft and use the full app there.",
+        );
+      } else {
+        await sendTelegramMessage(
+          String(message.chat.id),
+          `Create or join a Twilight Imperium draft in the Mini App:\n${miniAppLink()}`,
+        );
+      }
+    } else if (command === "/draft" && !argument) {
+      await sendTelegramMessage(String(message.chat.id), "Usage: /draft <draft-link-code>");
+    } else if (command === "/draft" && argument) {
+      const draft = await prisma.draft.findUnique({ where: { slug: argument } });
+      if (!draft) {
+        await sendTelegramMessage(String(message.chat.id), "I could not find that draft.");
+      } else if (draft.creatorUserId !== user.id) {
+        await sendTelegramMessage(String(message.chat.id), "Only the draft creator can connect it to this chat.");
+      } else if (message.chat.type === "private") {
+        await sendTelegramMessage(
+          String(message.chat.id),
+          "Use the group picker in the Mini App, or send this command in a group.",
+        );
+      } else {
+        let chat: TelegramChat;
+        try {
+          chat = await verifyTelegramNotificationChatAccess(String(message.chat.id), message.from.id, "group");
+        } catch (error) {
+          await sendTelegramMessage(
+            String(message.chat.id),
+            error instanceof Error ? error.message : "You and the bot must be administrators in this group",
+          );
+          return context.json({ ok: true });
+        }
+        const chatTitle = chat.title ?? message.chat.title ?? chat.username ?? "Telegram group";
+        const chatUsername = chat.username ?? message.chat.username;
+        const idempotencyKey = `telegram-update:${update.update_id}`;
+        await prisma.$transaction(async (transaction) => {
+          await transaction.draft.update({
+            where: { id: draft.id },
+            data: {
+              telegramChatId: String(chat.id),
+              telegramChatTitle: chatTitle,
+              telegramChatUsername: chatUsername,
+              telegramChannelRequestId: null,
+            },
+          });
+          const existingEvent = await transaction.draftEvent.findUnique({
+            where: { idempotencyKey },
+            select: { draftId: true },
+          });
+          if (existingEvent && existingEvent.draftId !== draft.id) {
+            throw new Error("Telegram update was already applied to another draft");
+          }
+          if (!existingEvent) {
+            await transaction.draftEvent.create({
+              data: {
+                draftId: draft.id,
+                actorUserId: user.id,
+                type: "CHAT_BOUND",
+                idempotencyKey,
+                payload: { chatId: String(chat.id), chatTitle, chatUsername, source: "group_command" },
+              },
+            });
+          }
+        });
+        await sendTelegramMessage(
+          String(chat.id),
+          `Connected to ${draft.title}.\nOpen the draft: ${miniAppLink(draft.slug)}`,
+        );
+      }
+    } else if (command === "/status") {
+      const draft = await prisma.draft.findFirst({
+        where: { telegramChatId: String(message.chat.id), status: { in: ["SETUP", "BANNING", "DRAFTING", "COMPLETE"] } },
+        orderBy: { createdAt: "desc" },
+        include: {
+          players: { orderBy: { orderIndex: "asc" } },
+          options: {
+            where: { kind: "FACTION", bannedByPlayerId: { not: null } },
+            select: { id: true },
+          },
+        },
+      });
+      const progress = draft
+        ? draft.status === "BANNING"
+          ? `${draft.options.length}/${draft.players.length} bans locked`
+          : `${draft.turnCursor}/${draft.players.length * 3} choices`
+        : "";
+      await sendTelegramMessage(
+        String(message.chat.id),
+        draft
+          ? `${draft.title}: ${draft.status.toLowerCase()}, ${progress}.\n${miniAppLink(draft.slug)}`
+          : "This chat is not connected to an active draft. Use /draft <draft-link-code>.",
+      );
+    }
+    return context.json({ ok: true });
+  } catch (error) {
+    await releaseFailedTelegramUpdate(String(update.update_id));
+    throw error;
   }
-  return context.json({ ok: true });
 });
 
 export function startOutboxWorker(): () => void {

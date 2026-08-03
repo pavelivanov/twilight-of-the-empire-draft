@@ -15,6 +15,7 @@
     "pretest": "npm run build -w @imperium/domain",
     "test": "npm run test --workspaces --if-present",
     "db:generate": "npm run db:generate -w @imperium/api",
+    "db:deploy": "npm run db:deploy -w @imperium/api",
     "db:migrate": "npm run db:migrate -w @imperium/api",
     "db:seed": "npm run db:seed -w @imperium/api",
     "db:studio": "npm run db:studio -w @imperium/api",
